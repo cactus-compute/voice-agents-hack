@@ -1045,6 +1045,91 @@ final class TacNetTests: XCTestCase {
         XCTAssertEqual(syncService.localConfig?.tree.label, "Local v4", "Same-version updates should be a no-op")
     }
 
+    func testNetworkEncryptionServiceEncryptDecryptRoundTripWithPinDerivedSessionKey() throws {
+        let organiserService = NetworkEncryptionService()
+        let participantService = NetworkEncryptionService()
+        let networkID = UUID(uuidString: "12341234-5678-90AB-CDEF-1234567890AB")!
+        let pinHash = try XCTUnwrap(NetworkConfig.hashPIN("2468"))
+        let keyMaterial = NetworkEncryptionService.keyMaterial(pinHash: pinHash, networkID: networkID)
+
+        let wrappedSessionKey = try organiserService.makeWrappedSessionKey(
+            networkID: networkID,
+            keyMaterial: keyMaterial
+        )
+        try participantService.activateSessionKey(
+            networkID: networkID,
+            wrappedSessionKey: wrappedSessionKey,
+            keyMaterial: keyMaterial
+        )
+
+        let plaintext = Data("CONTACT east at bridge checkpoint".utf8)
+        let encryptedPayload = try organiserService.encryptTransportPayload(plaintext)
+
+        XCTAssertNil(
+            encryptedPayload.range(of: plaintext),
+            "Encrypted payload should not contain plaintext fragments"
+        )
+
+        let decryptedPayload = try participantService.decryptTransportPayload(encryptedPayload)
+        XCTAssertEqual(decryptedPayload, plaintext)
+    }
+
+    func testNetworkEncryptionServiceWrongKeyRejectionPreventsPayloadAccess() throws {
+        let organiserService = NetworkEncryptionService()
+        let unauthorizedService = NetworkEncryptionService()
+        let networkID = UUID(uuidString: "ABCDEF12-3456-7890-ABCD-EF1234567890")!
+        let correctHash = try XCTUnwrap(NetworkConfig.hashPIN("1357"))
+        let wrongHash = try XCTUnwrap(NetworkConfig.hashPIN("0000"))
+
+        let correctMaterial = NetworkEncryptionService.keyMaterial(pinHash: correctHash, networkID: networkID)
+        let wrongMaterial = NetworkEncryptionService.keyMaterial(pinHash: wrongHash, networkID: networkID)
+        let wrappedSessionKey = try organiserService.makeWrappedSessionKey(
+            networkID: networkID,
+            keyMaterial: correctMaterial
+        )
+
+        XCTAssertThrowsError(
+            try unauthorizedService.activateSessionKey(
+                networkID: networkID,
+                wrappedSessionKey: wrappedSessionKey,
+                keyMaterial: wrongMaterial
+            )
+        ) { error in
+            XCTAssertEqual(error as? NetworkEncryptionError, .decryptionFailed)
+        }
+
+        let encryptedPayload = try organiserService.encryptTransportPayload(Data("casualty at north ridge".utf8))
+        XCTAssertThrowsError(try unauthorizedService.decryptTransportPayload(encryptedPayload)) { error in
+            XCTAssertEqual(error as? NetworkEncryptionError, .missingSessionKey)
+        }
+    }
+
+    func testNetworkEncryptionServiceLogSafetyAvoidsPINAndKeyMaterialLeakage() throws {
+        let logger = CapturingSecurityLogger()
+        let service = NetworkEncryptionService(logger: logger)
+        let networkID = UUID(uuidString: "FEE1DEAD-BEEF-1234-5678-90ABCDEF1234")!
+        let pin = "4321"
+        let pinHash = try XCTUnwrap(NetworkConfig.hashPIN(pin))
+        let keyMaterial = NetworkEncryptionService.keyMaterial(pinHash: pinHash, networkID: networkID)
+
+        let wrappedSessionKey = try service.makeWrappedSessionKey(
+            networkID: networkID,
+            keyMaterial: keyMaterial
+        )
+        _ = try? service.activateSessionKey(
+            networkID: networkID,
+            wrappedSessionKey: wrappedSessionKey,
+            keyMaterial: "incorrect-\(keyMaterial)"
+        )
+
+        let combinedLogs = logger.messages.joined(separator: "\n").lowercased()
+        XCTAssertFalse(combinedLogs.isEmpty)
+        XCTAssertFalse(combinedLogs.contains(pin.lowercased()))
+        XCTAssertFalse(combinedLogs.contains(pinHash.lowercased()))
+        XCTAssertFalse(combinedLogs.contains(keyMaterial.lowercased()))
+        XCTAssertFalse(combinedLogs.contains(wrappedSessionKey.lowercased()))
+    }
+
     @MainActor
     func testTreeSyncJoinRejectsWrongPINAndDoesNotLeakTree() async throws {
         let transport = MockBluetoothMeshTransport()
@@ -3287,6 +3372,23 @@ private actor MockTacticalSummarizer: TacticalSummarizing {
 
     func invocations() -> [Invocation] {
         recordedInvocations
+    }
+}
+
+private final class CapturingSecurityLogger: SecurityEventLogging, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String] = []
+
+    func log(_ message: String) {
+        lock.withLock {
+            entries.append(message)
+        }
+    }
+
+    var messages: [String] {
+        lock.withLock {
+            entries
+        }
     }
 }
 

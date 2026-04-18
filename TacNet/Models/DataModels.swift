@@ -22,6 +22,7 @@ struct NetworkConfig: Codable, Equatable, Sendable {
     var networkID: UUID
     var createdBy: String
     var pinHash: String?
+    var encryptedSessionKey: String?
     var version: Int
     var tree: TreeNode
 
@@ -30,6 +31,7 @@ struct NetworkConfig: Codable, Equatable, Sendable {
         case networkID = "network_id"
         case createdBy = "created_by"
         case pinHash = "pin_hash"
+        case encryptedSessionKey = "encrypted_session_key"
         case version
         case tree
     }
@@ -81,6 +83,210 @@ struct NetworkConfig: Codable, Equatable, Sendable {
         }
         self = incoming
         return true
+    }
+}
+
+enum NetworkEncryptionError: Error, Equatable {
+    case invalidWrappedSessionKey
+    case decryptionFailed
+    case missingSessionKey
+    case unencryptedPayloadRejected
+}
+
+protocol SecurityEventLogging: Sendable {
+    func log(_ message: String)
+}
+
+struct NoOpSecurityEventLogger: SecurityEventLogging {
+    func log(_ message: String) {}
+}
+
+final class NetworkEncryptionService: @unchecked Sendable {
+    private static let transportHeader = Data("TNENC1".utf8)
+    private static let wrappedSessionKeyPrefix = "key:v1:"
+    private static let storageTokenPrefix = "enc:v1:"
+    private static let storageKeyMaterial = "TacNet.AfterActionReview.Storage.v1"
+
+    private let lock = NSLock()
+    private let logger: any SecurityEventLogging
+    private var activeNetworkID: UUID?
+    private var activeSessionKey: SymmetricKey?
+
+    init(logger: any SecurityEventLogging = NoOpSecurityEventLogger()) {
+        self.logger = logger
+    }
+
+    static func keyMaterial(pinHash: String?, networkID: UUID) -> String {
+        if let pinHash, !pinHash.isEmpty {
+            return "pin:\(pinHash.lowercased())"
+        }
+        return "network:\(networkID.uuidString.lowercased())"
+    }
+
+    var hasActiveSessionKey: Bool {
+        withLock { activeSessionKey != nil }
+    }
+
+    func hasSessionKey(for networkID: UUID) -> Bool {
+        withLock {
+            activeNetworkID == networkID && activeSessionKey != nil
+        }
+    }
+
+    func makeWrappedSessionKey(networkID: UUID, keyMaterial: String) throws -> String {
+        let sessionKey = SymmetricKey(size: .bits256)
+        let wrappingKey = Self.derivedSymmetricKey(from: keyMaterial)
+
+        do {
+            let sealed = try AES.GCM.seal(Self.sessionKeyData(sessionKey), using: wrappingKey)
+            guard let combined = sealed.combined else {
+                throw NetworkEncryptionError.invalidWrappedSessionKey
+            }
+
+            activate(sessionKey: sessionKey, networkID: networkID)
+            logger.log("Encryption: generated wrapped session key for network \(networkID.uuidString).")
+            return Self.wrappedSessionKeyPrefix + combined.base64EncodedString()
+        } catch {
+            logger.log("Encryption: failed to wrap session key for network \(networkID.uuidString).")
+            throw NetworkEncryptionError.invalidWrappedSessionKey
+        }
+    }
+
+    func activateSessionKey(networkID: UUID, wrappedSessionKey: String, keyMaterial: String) throws {
+        guard wrappedSessionKey.hasPrefix(Self.wrappedSessionKeyPrefix) else {
+            throw NetworkEncryptionError.invalidWrappedSessionKey
+        }
+
+        let encodedCombined = String(wrappedSessionKey.dropFirst(Self.wrappedSessionKeyPrefix.count))
+        guard let combined = Data(base64Encoded: encodedCombined) else {
+            throw NetworkEncryptionError.invalidWrappedSessionKey
+        }
+
+        let wrappingKey = Self.derivedSymmetricKey(from: keyMaterial)
+        do {
+            let sealedBox = try AES.GCM.SealedBox(combined: combined)
+            let unwrappedSessionKeyData = try AES.GCM.open(sealedBox, using: wrappingKey)
+            guard unwrappedSessionKeyData.count == 32 else {
+                throw NetworkEncryptionError.invalidWrappedSessionKey
+            }
+
+            activate(
+                sessionKey: SymmetricKey(data: unwrappedSessionKeyData),
+                networkID: networkID
+            )
+            logger.log("Encryption: activated wrapped session key for network \(networkID.uuidString).")
+        } catch {
+            logger.log("Encryption: failed to activate wrapped session key for network \(networkID.uuidString).")
+            throw NetworkEncryptionError.decryptionFailed
+        }
+    }
+
+    func activateDeterministicSessionKey(networkID: UUID, keyMaterial: String) {
+        let sessionKey = Self.derivedSymmetricKey(from: "session:\(keyMaterial)")
+        activate(sessionKey: sessionKey, networkID: networkID)
+        logger.log("Encryption: activated deterministic session key for network \(networkID.uuidString).")
+    }
+
+    func clearSessionKey() {
+        withLock {
+            activeNetworkID = nil
+            activeSessionKey = nil
+        }
+        logger.log("Encryption: cleared active session key context.")
+    }
+
+    func encryptTransportPayload(_ payload: Data) throws -> Data {
+        guard let sessionKey = withLock({ activeSessionKey }) else {
+            return payload
+        }
+
+        let sealed = try AES.GCM.seal(payload, using: sessionKey)
+        guard let combined = sealed.combined else {
+            throw NetworkEncryptionError.decryptionFailed
+        }
+
+        return Self.transportHeader + combined
+    }
+
+    func decryptTransportPayload(_ payload: Data) throws -> Data {
+        let activeSessionKey = withLock { self.activeSessionKey }
+
+        if payload.starts(with: Self.transportHeader) {
+            guard let activeSessionKey else {
+                throw NetworkEncryptionError.missingSessionKey
+            }
+
+            let encryptedPayload = payload.dropFirst(Self.transportHeader.count)
+            do {
+                let sealedBox = try AES.GCM.SealedBox(combined: encryptedPayload)
+                return try AES.GCM.open(sealedBox, using: activeSessionKey)
+            } catch {
+                throw NetworkEncryptionError.decryptionFailed
+            }
+        }
+
+        guard activeSessionKey == nil else {
+            throw NetworkEncryptionError.unencryptedPayloadRejected
+        }
+        return payload
+    }
+
+    static func encryptForStorage(_ plaintext: String) -> String {
+        let plainData = Data(plaintext.utf8)
+        guard !plainData.isEmpty else {
+            return plaintext
+        }
+
+        do {
+            let sealed = try AES.GCM.seal(plainData, using: storageSymmetricKey)
+            guard let combined = sealed.combined else {
+                return storageTokenPrefix
+            }
+            return storageTokenPrefix + combined.base64EncodedString()
+        } catch {
+            return storageTokenPrefix
+        }
+    }
+
+    static func decryptFromStorage(_ storedValue: String) -> String {
+        guard storedValue.hasPrefix(storageTokenPrefix) else {
+            return storedValue
+        }
+
+        let encodedCombined = String(storedValue.dropFirst(storageTokenPrefix.count))
+        guard let combined = Data(base64Encoded: encodedCombined),
+              let sealedBox = try? AES.GCM.SealedBox(combined: combined),
+              let decryptedData = try? AES.GCM.open(sealedBox, using: storageSymmetricKey) else {
+            return ""
+        }
+
+        return String(decoding: decryptedData, as: UTF8.self)
+    }
+
+    private func activate(sessionKey: SymmetricKey, networkID: UUID) {
+        withLock {
+            activeNetworkID = networkID
+            activeSessionKey = sessionKey
+        }
+    }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    private static var storageSymmetricKey: SymmetricKey {
+        derivedSymmetricKey(from: storageKeyMaterial)
+    }
+
+    private static func derivedSymmetricKey(from material: String) -> SymmetricKey {
+        let digest = SHA256.hash(data: Data(material.utf8))
+        return SymmetricKey(data: Data(digest))
+    }
+
+    private static func sessionKeyData(_ key: SymmetricKey) -> Data {
+        key.withUnsafeBytes { Data($0) }
     }
 }
 
@@ -521,7 +727,7 @@ final class PersistedAfterActionReviewMessage {
         senderRole = record.senderRole
         timestamp = record.timestamp
         typeRawValue = record.type.rawValue
-        body = record.body
+        body = NetworkEncryptionService.encryptForStorage(record.body)
         latitude = record.latitude
         longitude = record.longitude
         accuracy = record.accuracy
@@ -536,7 +742,7 @@ final class PersistedAfterActionReviewMessage {
             senderRole: senderRole,
             timestamp: timestamp,
             type: resolvedType,
-            body: body,
+            body: NetworkEncryptionService.decryptFromStorage(body),
             latitude: latitude,
             longitude: longitude,
             accuracy: accuracy,

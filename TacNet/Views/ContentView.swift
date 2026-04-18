@@ -2877,12 +2877,15 @@ final class AppNetworkCoordinator: ObservableObject {
     }
 
     func publish(networkConfig: NetworkConfig) {
-        treeSyncService.setLocalConfig(networkConfig)
-        meshService.publishNetwork(networkConfig)
+        let securedConfig = treeSyncService.secureConfigForPublishing(networkConfig)
+        treeSyncService.setLocalConfig(securedConfig)
+        meshService.publishNetwork(securedConfig)
     }
 
     func activateRoleClaiming(with config: NetworkConfig) {
-        treeSyncService.setLocalConfig(config)
+        if treeSyncService.localConfig?.networkID != config.networkID {
+            treeSyncService.setLocalConfig(config)
+        }
         meshService.start()
     }
 

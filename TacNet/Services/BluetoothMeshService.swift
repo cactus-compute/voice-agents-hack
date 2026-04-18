@@ -1310,6 +1310,7 @@ final class BluetoothMeshService {
 
     private let transport: BluetoothMeshTransporting
     private let deduplicator: MessageDeduplicator
+    private let encryptionService: NetworkEncryptionService
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -1323,10 +1324,12 @@ final class BluetoothMeshService {
 
     init(
         transport: BluetoothMeshTransporting = CoreBluetoothMeshTransport(),
-        deduplicator: MessageDeduplicator = MessageDeduplicator()
+        deduplicator: MessageDeduplicator = MessageDeduplicator(),
+        encryptionService: NetworkEncryptionService = NetworkEncryptionService()
     ) {
         self.transport = transport
         self.deduplicator = deduplicator
+        self.encryptionService = encryptionService
         self.transport.eventHandler = { [weak self] event in
             self?.handleTransportEvent(event)
         }
@@ -1355,6 +1358,7 @@ final class BluetoothMeshService {
     func clearPublishedNetwork() {
         transport.configureAdvertisement(nil)
         transport.updateTreeConfigPayload(Data())
+        clearSessionKey()
     }
 
     func fetchNetworkConfig(from peerID: UUID, completion: @escaping (Result<NetworkConfig, Error>) -> Void) {
@@ -1382,15 +1386,48 @@ final class BluetoothMeshService {
     }
 
     func publish(_ message: Message) {
-        guard message.ttl > 0 else {
+        var outboundMessage = message
+        if encryptionService.hasActiveSessionKey {
+            outboundMessage.payload.encrypted = true
+        }
+
+        guard outboundMessage.ttl > 0 else {
             return
         }
 
-        guard !deduplicator.isDuplicate(messageId: message.id) else {
+        guard !deduplicator.isDuplicate(messageId: outboundMessage.id) else {
             return
         }
 
-        flood(message, excluding: nil)
+        flood(outboundMessage, excluding: nil)
+    }
+
+    func hasActiveSessionKey(for networkID: UUID) -> Bool {
+        encryptionService.hasSessionKey(for: networkID)
+    }
+
+    func prepareSessionKeyForPublishing(networkID: UUID, keyMaterial: String) throws -> String {
+        try encryptionService.makeWrappedSessionKey(networkID: networkID, keyMaterial: keyMaterial)
+    }
+
+    func activateSessionKey(
+        networkID: UUID,
+        wrappedSessionKey: String,
+        keyMaterial: String
+    ) throws {
+        try encryptionService.activateSessionKey(
+            networkID: networkID,
+            wrappedSessionKey: wrappedSessionKey,
+            keyMaterial: keyMaterial
+        )
+    }
+
+    func activateDeterministicSessionKey(networkID: UUID, keyMaterial: String) {
+        encryptionService.activateDeterministicSessionKey(networkID: networkID, keyMaterial: keyMaterial)
+    }
+
+    func clearSessionKey() {
+        encryptionService.clearSessionKey()
     }
 
     func connectionState(for peerID: UUID) -> PeerConnectionState {
@@ -1431,7 +1468,14 @@ final class BluetoothMeshService {
     }
 
     private func handleIncomingData(_ data: Data, from sourcePeerID: UUID) {
-        guard var inboundMessage = try? decoder.decode(Message.self, from: data) else {
+        let decryptedData: Data
+        do {
+            decryptedData = try encryptionService.decryptTransportPayload(data)
+        } catch {
+            return
+        }
+
+        guard var inboundMessage = try? decoder.decode(Message.self, from: decryptedData) else {
             return
         }
 
@@ -1487,10 +1531,18 @@ final class BluetoothMeshService {
     }
 
     private func send(_ message: Message, to peerIDs: Set<UUID>) {
-        guard let data = try? encoder.encode(message) else {
+        guard let encodedMessage = try? encoder.encode(message) else {
             return
         }
-        transport.send(data, messageType: message.type, to: peerIDs)
+
+        let outboundPayload: Data
+        do {
+            outboundPayload = try encryptionService.encryptTransportPayload(encodedMessage)
+        } catch {
+            return
+        }
+
+        transport.send(outboundPayload, messageType: message.type, to: peerIDs)
     }
 }
 
@@ -1946,6 +1998,74 @@ final class TreeSyncService: ObservableObject {
     func setLocalConfig(_ config: NetworkConfig?) {
         localConfig = config
         persistLocalConfig(config)
+
+        if config == nil {
+            meshService.clearSessionKey()
+        }
+    }
+
+    func secureConfigForPublishing(_ config: NetworkConfig) -> NetworkConfig {
+        var securedConfig = config
+        let keyMaterial = NetworkEncryptionService.keyMaterial(
+            pinHash: securedConfig.pinHash,
+            networkID: securedConfig.networkID
+        )
+
+        if let existingConfig = localConfig,
+           existingConfig.networkID == securedConfig.networkID,
+           existingConfig.pinHash == securedConfig.pinHash,
+           let existingWrappedSessionKey = existingConfig.encryptedSessionKey {
+            securedConfig.encryptedSessionKey = existingWrappedSessionKey
+
+            if !meshService.hasActiveSessionKey(for: securedConfig.networkID) {
+                let didActivate = (try? meshService.activateSessionKey(
+                    networkID: securedConfig.networkID,
+                    wrappedSessionKey: existingWrappedSessionKey,
+                    keyMaterial: keyMaterial
+                )) != nil
+
+                if !didActivate,
+                   let regeneratedWrappedKey = try? meshService.prepareSessionKeyForPublishing(
+                       networkID: securedConfig.networkID,
+                       keyMaterial: keyMaterial
+                   ) {
+                    securedConfig.encryptedSessionKey = regeneratedWrappedKey
+                } else if !didActivate {
+                    meshService.activateDeterministicSessionKey(
+                        networkID: securedConfig.networkID,
+                        keyMaterial: keyMaterial
+                    )
+                    securedConfig.encryptedSessionKey = nil
+                }
+            }
+            return securedConfig
+        }
+
+        if let suppliedWrappedSessionKey = securedConfig.encryptedSessionKey {
+            let didActivate = (try? meshService.activateSessionKey(
+                networkID: securedConfig.networkID,
+                wrappedSessionKey: suppliedWrappedSessionKey,
+                keyMaterial: keyMaterial
+            )) != nil
+            if didActivate {
+                return securedConfig
+            }
+        }
+
+        if let wrappedSessionKey = try? meshService.prepareSessionKeyForPublishing(
+            networkID: securedConfig.networkID,
+            keyMaterial: keyMaterial
+        ) {
+            securedConfig.encryptedSessionKey = wrappedSessionKey
+        } else {
+            meshService.activateDeterministicSessionKey(
+                networkID: securedConfig.networkID,
+                keyMaterial: keyMaterial
+            )
+            securedConfig.encryptedSessionKey = nil
+        }
+
+        return securedConfig
     }
 
     @discardableResult
@@ -2006,6 +2126,31 @@ final class TreeSyncService: ObservableObject {
             guard remoteConfig.isValidPIN(pin) else {
                 throw TreeSyncJoinError.invalidPIN
             }
+        }
+
+        let keyMaterial = NetworkEncryptionService.keyMaterial(
+            pinHash: remoteConfig.pinHash ?? NetworkConfig.hashPIN(pin),
+            networkID: remoteConfig.networkID
+        )
+
+        if let wrappedSessionKey = remoteConfig.encryptedSessionKey {
+            do {
+                try meshService.activateSessionKey(
+                    networkID: remoteConfig.networkID,
+                    wrappedSessionKey: wrappedSessionKey,
+                    keyMaterial: keyMaterial
+                )
+            } catch {
+                if remoteConfig.requiresPIN {
+                    throw TreeSyncJoinError.invalidPIN
+                }
+                throw TreeSyncJoinError.treeConfigUnavailable
+            }
+        } else {
+            meshService.activateDeterministicSessionKey(
+                networkID: remoteConfig.networkID,
+                keyMaterial: keyMaterial
+            )
         }
 
         localConfig = remoteConfig
