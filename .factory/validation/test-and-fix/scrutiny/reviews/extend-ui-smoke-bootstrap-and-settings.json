@@ -1,0 +1,21 @@
+{
+  "featureId": "extend-ui-smoke-bootstrap-and-settings",
+  "reviewedAt": "2026-04-18T07:33:07.797139Z",
+  "commitId": "2516850c1757da4402b4af51e305fd496c5d9be0",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "Pass. The fix feature directly addresses both prior scrutiny findings from simulator-ui-smoke-walkthrough-and-fix: it adds a bootstrap-gate UI test that launches without --ui-test-skip-download (using a deterministic fixture), and it adds explicit organiser-vs-participant Settings affordance assertions for VAL-UI-011.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "knowledge",
+      "observation": "Shared UI-test reference docs are now stale: new launch arguments/routes added by this fix are not documented in .factory/library/ui-tests.md.",
+      "evidence": "Implementation adds `UITestMode.downloadFixture`, `UITestMode.role`, and `--ui-test-route=settings` host in TacNet/Views/ContentView.swift (lines 34, 41, 214, 227, 3379), but .factory/library/ui-tests.md only documents `--ui-test-skip-download` and `--ui-test-route=pin-entry` (lines 12 and 16)."
+    }
+  ],
+  "addressesFailureFrom": "/Users/lucaspfingstenplanells/Desktop/YC-hack/.factory/validation/test-and-fix/scrutiny/reviews/simulator-ui-smoke-walkthrough-and-fix.json",
+  "summary": "Pass with 0 blocking issues. Evidence from original feature diffs (57f1548/5287ef6) and fix diff (2516850) plus the fix transcript skeleton shows the previous blocking coverage gap is closed and the non-blocking settings-affordance gap is now explicitly tested."
+}

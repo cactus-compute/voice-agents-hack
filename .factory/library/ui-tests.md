@@ -17,6 +17,15 @@ process launch arguments:
   `UITestPinEntryHost`, presenting the real `PinEntryView` against a seeded
   `DiscoveredNetwork`. Used by the PIN entry test because PIN entry is
   otherwise unreachable in Simulator (no BLE → no discovered networks).
+- `--ui-test-route=settings` — replaces the root view with `UITestSettingsHost`
+  so UI tests can assert role-gated Settings affordances without running full
+  onboarding/network flows.
+- `--ui-test-download-fixture=<name>` — deterministic bootstrap fixtures:
+  - `stuck`: keeps the download gate visible at 0% with no error.
+  - `failfast`: unlocks immediately (similar effect to skip-download).
+- `--ui-test-role=organiser|participant` — seeds role state for
+  `--ui-test-route=settings` so tests can verify organiser-only vs participant
+  controls.
 
 Both flags are inert when not supplied, so production launches are unaffected.
 

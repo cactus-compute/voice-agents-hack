@@ -1,11 +1,11 @@
 {
   "milestone": "test-and-fix",
-  "round": 1,
-  "status": "fail",
+  "round": 2,
+  "status": "pass",
   "validatorsRun": {
     "test": {
       "passed": true,
-      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests",
+      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (TacNetUITests) and xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests",
       "exitCode": 0
     },
     "typecheck": {
@@ -15,46 +15,25 @@
     },
     "lint": {
       "passed": true,
-      "command": "xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (checked non-upstream warnings via grep ': warning:' | grep -v 'cactus.framework', count=0)",
+      "command": "xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (non-upstream warning check from /tmp/tacnet-clean-build-round2.log: ': warning:' lines excluding 'cactus.framework' = 0)",
       "exitCode": 0
     }
   },
   "reviewsSummary": {
-    "total": 4,
+    "total": 2,
     "passed": 2,
-    "failed": 2,
-    "failedFeatures": [
-      "fix-model-download-subsystem",
-      "simulator-ui-smoke-walkthrough-and-fix"
-    ]
+    "failed": 0,
+    "failedFeatures": []
   },
-  "blockingIssues": [
+  "blockingIssues": [],
+  "appliedUpdates": [
     {
-      "featureId": "fix-model-download-subsystem",
-      "severity": "blocking",
-      "description": "TacNet/Services/Cactus.swift non-zip path accepts any payload as successful install and persists completion, allowing tiny/invalid HTTP 200 content to unlock tactical features and mark model ready."
-    },
-    {
-      "featureId": "simulator-ui-smoke-walkthrough-and-fix",
-      "severity": "blocking",
-      "description": "TacNetUITests/TacNetUITests.swift makeApp() always injects --ui-test-skip-download, so automated smoke never exercises bootstrap/download-progress coverage required by the feature contract."
+      "target": "library",
+      "description": "Updated .factory/library/ui-tests.md with new UI-test launch arguments and settings route host usage added by the fix feature.",
+      "sourceFeature": "extend-ui-smoke-bootstrap-and-settings"
     }
   ],
-  "appliedUpdates": [],
-  "suggestedGuidanceUpdates": [
-    {
-      "target": "skill:ios-worker",
-      "suggestion": "Clarify baseline-delta behavior for multi-feature fix missions and enforce step compliance reporting (including required build command execution).",
-      "evidence": "Multiple reviews reported procedure mismatches: feature fix-model-download-subsystem notes conflict between 'all tests must pass' wording and known mission baseline failures; feature fix-ptt-mesh-disconnected-gating transcript omitted required build step while reporting followedProcedure=true.",
-      "isSystemic": true
-    },
-    {
-      "target": "AGENTS.md",
-      "suggestion": "Add commit-traceability guidance requiring handoff commitId to point to the primary implementation commit and requiring feature diffs to avoid unrelated changes when starting from a dirty tree.",
-      "evidence": "Feature simulator-ui-smoke-walkthrough-and-fix handoff points to docs/services commit 5287ef6 while core implementation is parent 57f1548; feature fix-model-download-subsystem review observed unrelated files bundled into the feature commit.",
-      "isSystemic": true
-    }
-  ],
+  "suggestedGuidanceUpdates": [],
   "rejectedObservations": [],
-  "previousRound": null
+  "previousRound": ".factory/validation/test-and-fix/scrutiny/synthesis.round1.json"
 }
