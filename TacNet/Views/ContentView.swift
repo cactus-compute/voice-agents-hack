@@ -2549,7 +2549,7 @@ final class MainViewModel: ObservableObject {
     }
 
     var isPTTDisabled: Bool {
-        !isConnected || pttState == .sending
+        pttState == .sending
     }
 
     var disconnectionMessage: String? {
@@ -2579,9 +2579,6 @@ final class MainViewModel: ObservableObject {
     }
 
     var pttButtonColor: Color {
-        if !isConnected {
-            return .gray
-        }
         switch pttState {
         case .idle:
             return .blue
@@ -2609,6 +2606,7 @@ final class MainViewModel: ObservableObject {
     }
 
     func handleIncomingMessage(_ message: Message) {
+        NSLog("[MSG] Received %@ from '%@'", message.type.rawValue, message.senderRole)
         guard !seenMessageIDs.contains(message.id),
               let context = localContext() else {
             return
@@ -2660,22 +2658,20 @@ final class MainViewModel: ObservableObject {
             return
         }
 
-        guard isConnected else {
-            errorMessage = Self.disconnectedErrorText
-            return
-        }
-
         guard localContext() != nil else {
+            NSLog("[PTT] ❌ No role claimed — cannot transmit")
             errorMessage = "Claim a role before transmitting."
             return
         }
 
+        NSLog("[PTT] Recording started (connected peers: %d)", meshService.connectedPeerIDs.count)
         do {
             try await audioService.pttPressed()
             pttState = .recording
             errorMessage = nil
         } catch {
             pttState = .idle
+            NSLog("[PTT] ❌ Failed to start recording: %@", error.localizedDescription)
             errorMessage = "Unable to start recording: \(error.localizedDescription)"
         }
     }
@@ -2685,27 +2681,33 @@ final class MainViewModel: ObservableObject {
             return
         }
 
+        NSLog("[PTT] Recording stopped — transcribing…")
         pttState = .sending
 
         do {
             let queuedSequence = try await audioService.pttReleased()
             guard let queuedSequence else {
+                NSLog("[PTT] Silence detected — no speech found, discarding clip")
                 pttState = .idle
                 return
             }
 
+            NSLog("[PTT] Waiting for transcription (model may be loading on first use)…")
             await audioService.waitForIdle()
             let history = await audioService.transcriptHistory
             guard let transcript = history.first(where: { $0.sequence == queuedSequence })?.transcript,
                   !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                NSLog("[PTT] Transcription produced empty result — discarding")
                 pttState = .idle
                 return
             }
 
+            NSLog("[PTT] ✅ Transcript: \"%@\"", transcript)
             publishLocalTranscript(transcript)
             pttState = .idle
         } catch {
             pttState = .idle
+            NSLog("[PTT] ❌ Error: %@", error.localizedDescription)
             errorMessage = "Unable to send message: \(error.localizedDescription)"
         }
     }
@@ -2723,6 +2725,11 @@ final class MainViewModel: ObservableObject {
             senderRole: context.senderRole,
             in: context.config.tree
         )
+        let peers = meshService.connectedPeerIDs.count
+        NSLog("[PTT] Publishing broadcast from role '%@' → %d connected peer(s)", context.senderRole, peers)
+        if peers == 0 {
+            NSLog("[PTT] No peers connected — message queued in relay, will send when peer joins")
+        }
         meshService.publish(outboundMessage)
         onBroadcastPublished?(outboundMessage)
     }

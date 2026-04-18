@@ -934,7 +934,15 @@ public actor ModelDownloadService {
     }
 
     public func canUseTacticalFeatures() -> Bool {
-        synchronizeCompletionState()
+        let ready = synchronizeCompletionState()
+        if ready {
+            NSLog("[ModelDownload] ✅ Model ready at %@", modelDirectoryURL.path)
+        } else {
+            NSLog("[ModelDownload] ⚠️ Model NOT ready — sentinel: %@, dir: %@",
+                  fileManager.fileExists(atPath: modelFileURL.path) ? "present" : "missing",
+                  fileManager.fileExists(atPath: modelDirectoryURL.path) ? "present" : "missing")
+        }
+        return ready
     }
 
     public func downloadedModelDirectoryPath() -> String? {
@@ -1008,49 +1016,76 @@ public actor ModelDownloadService {
 
                 NSLog("[ModelDownload] Download finished — temporary file at %@", temporaryLocation.path)
 
-                // Validate the zip size before doing anything else.
-                let zipAttributes = try fileManager.attributesOfItem(atPath: temporaryLocation.path)
-                let zipSize = (zipAttributes[.size] as? Int64) ?? 0
-                let minimumExpectedSize = configuration.expectedModelSizeBytes / 4
-                NSLog("[ModelDownload] Zip size: %lld bytes (minimum expected: %lld bytes)", zipSize, minimumExpectedSize)
-                guard zipSize >= minimumExpectedSize else {
+                let fileAttributes = try fileManager.attributesOfItem(atPath: temporaryLocation.path)
+                let fileSize = (fileAttributes[.size] as? Int64) ?? 0
+                let looksLikeZip = Self.fileHasZipMagicBytes(at: temporaryLocation)
+                NSLog("[ModelDownload] Downloaded file size: %lld bytes (isZip: %@)", fileSize, looksLikeZip ? "YES" : "NO")
+
+                if looksLikeZip {
+                    // Zip payload — validate size, extract into the model directory,
+                    // and write a sentinel so future launches skip the download.
+                    let minimumExpectedSize = configuration.expectedModelSizeBytes / 4
+                    NSLog("[ModelDownload] Zip size: %lld bytes (minimum expected: %lld bytes)", fileSize, minimumExpectedSize)
+                    guard fileSize >= minimumExpectedSize else {
+                        try? fileManager.removeItem(at: temporaryLocation)
+                        lastNonRecoverableError = .network(
+                            underlyingDescription: "Downloaded file is too small (\(fileSize) bytes). Expected ~\(configuration.expectedModelSizeBytes) bytes. The model URL may be inaccessible or require authentication."
+                        )
+                        break retryLoop
+                    }
+
+                    // Remove any previously partially-extracted model directory so
+                    // the extraction always starts from a clean slate.
+                    if fileManager.fileExists(atPath: modelDirectoryURL.path) {
+                        NSLog("[ModelDownload] Removing previous partial extraction at %@", modelDirectoryURL.path)
+                        try fileManager.removeItem(at: modelDirectoryURL)
+                    }
+
+                    NSLog("[ModelDownload] Extracting zip to %@", modelDirectoryURL.path)
+                    // The zip contains 2088 .weights files at its root (no top-level
+                    // subdirectory), so extract directly into modelDirectoryURL so
+                    // all files land in the right place for cactusInit.
+                    try fileManager.unzipItem(at: temporaryLocation, to: modelDirectoryURL)
                     try? fileManager.removeItem(at: temporaryLocation)
-                    lastNonRecoverableError = .network(
-                        underlyingDescription: "Downloaded file is too small (\(zipSize) bytes). Expected ~\(configuration.expectedModelSizeBytes) bytes. The model URL may be inaccessible or require authentication."
-                    )
-                    break retryLoop
+                    NSLog("[ModelDownload] Extraction complete")
+
+                    let extractedCount = (try? fileManager.contentsOfDirectory(atPath: modelDirectoryURL.path))?.count ?? 0
+                    NSLog("[ModelDownload] Extracted %d files into %@", extractedCount, modelDirectoryURL.path)
+
+                    guard fileManager.fileExists(atPath: modelDirectoryURL.path) else {
+                        lastNonRecoverableError = .network(
+                            underlyingDescription: "Zip extraction completed but the model directory was not found at the expected path. The zip may have a different internal structure."
+                        )
+                        break retryLoop
+                    }
+
+                    // Write the sentinel so future launches can detect a complete download.
+                    fileManager.createFile(atPath: modelFileURL.path, contents: nil, attributes: nil)
+                    NSLog("[ModelDownload] Sentinel written at %@, download complete", modelFileURL.path)
+                } else {
+                    // Non-zip payload — the downloaded file IS the model artifact.
+                    // Move it into the model directory under the configured file name;
+                    // that file itself acts as the sentinel used by
+                    // synchronizeCompletionState().
+                    if !fileManager.fileExists(atPath: modelDirectoryURL.path) {
+                        try fileManager.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
+                    }
+                    if fileManager.fileExists(atPath: modelFileURL.path) {
+                        try fileManager.removeItem(at: modelFileURL)
+                    }
+                    NSLog("[ModelDownload] Installing non-zip model artifact at %@", modelFileURL.path)
+                    do {
+                        try fileManager.moveItem(at: temporaryLocation, to: modelFileURL)
+                    } catch {
+                        // moveItem can fail across volumes; fall back to copy + remove.
+                        try fileManager.copyItem(at: temporaryLocation, to: modelFileURL)
+                        try? fileManager.removeItem(at: temporaryLocation)
+                    }
+                    NSLog("[ModelDownload] Non-zip install complete at %@", modelFileURL.path)
                 }
 
-                // Remove any previously partially-extracted model directory so
-                // the extraction always starts from a clean slate.
-                if fileManager.fileExists(atPath: modelDirectoryURL.path) {
-                    NSLog("[ModelDownload] Removing previous partial extraction at %@", modelDirectoryURL.path)
-                    try fileManager.removeItem(at: modelDirectoryURL)
-                }
-
-                NSLog("[ModelDownload] Extracting zip to %@", modelDirectoryURL.path)
-                // The zip contains 2088 .weights files at its root (no top-level
-                // subdirectory), so extract directly into modelDirectoryURL so
-                // all files land in the right place for cactusInit.
-                try fileManager.unzipItem(at: temporaryLocation, to: modelDirectoryURL)
-                try? fileManager.removeItem(at: temporaryLocation)
-                NSLog("[ModelDownload] Extraction complete")
-
-                let extractedCount = (try? fileManager.contentsOfDirectory(atPath: modelDirectoryURL.path))?.count ?? 0
-                NSLog("[ModelDownload] Extracted %d files into %@", extractedCount, modelDirectoryURL.path)
-
-                guard fileManager.fileExists(atPath: modelDirectoryURL.path) else {
-                    lastNonRecoverableError = .network(
-                        underlyingDescription: "Zip extraction completed but the model directory was not found at the expected path. The zip may have a different internal structure."
-                    )
-                    break retryLoop
-                }
-
-                // Write the sentinel so future launches can detect a complete download.
-                fileManager.createFile(atPath: modelFileURL.path, contents: nil, attributes: nil)
                 userDefaults.removeObject(forKey: resumeDataKey)
                 userDefaults.set(true, forKey: completionKey)
-                NSLog("[ModelDownload] Sentinel written at %@, download complete", modelFileURL.path)
 
                 progressReporter.finish()
                 return modelDirectoryURL
@@ -1059,9 +1094,14 @@ public actor ModelDownloadService {
                 case let .interrupted(resumeData):
                     if let resumeData, !resumeData.isEmpty {
                         userDefaults.set(resumeData, forKey: resumeDataKey)
+                        NSLog("[ModelDownload] Download interrupted — stored %d bytes of resume data for next attempt", resumeData.count)
+                    } else {
+                        NSLog("[ModelDownload] Download interrupted — no resume data available")
                     }
-                    // Auto-retry interrupted downloads
-                    continue
+                    // Surface interruption to the caller so it can decide when to
+                    // retry (e.g. user tap). The next ensureModelAvailable() call
+                    // will pick up the stored resume data automatically.
+                    break retryLoop
                 case let .transport(transportError):
                     let isTransient = [
                         NSURLErrorTimedOut,
@@ -1111,6 +1151,17 @@ public actor ModelDownloadService {
         modelDirectoryURL.appendingPathComponent(configuration.modelFileName, isDirectory: false)
     }
 
+    /// Peek the first 4 bytes of `url` to see if it starts with the standard
+    /// ZIP local-file-header magic (`PK\x03\x04`). Non-zip payloads (e.g. raw
+    /// model binaries used by unit tests or future config variants) are then
+    /// treated as the final artifact rather than as an archive to extract.
+    private static func fileHasZipMagicBytes(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let prefix = (try? handle.read(upToCount: 4)) ?? Data()
+        return prefix == Data([0x50, 0x4B, 0x03, 0x04])
+    }
+
     /// Detects files extracted to the wrong location by a previous buggy run and
     /// moves them into `modelDirectoryURL` without re-downloading. Returns `true`
     /// if recovery succeeded and the model is ready to use.
@@ -1154,14 +1205,16 @@ public actor ModelDownloadService {
 
     private func synchronizeCompletionState() -> Bool {
         // Both the sentinel file AND the model directory must be present.
-        // If either is missing the extraction was incomplete; clean up so
-        // this launch triggers a fresh download automatically — no reinstall needed.
+        // If either is missing the extraction was incomplete; clean up on-disk
+        // artifacts so the next attempt starts clean. We deliberately leave any
+        // stored resumeData in place — it's consulted by ensureModelAvailable()
+        // on the next call so an interrupted download can resume from the prior
+        // byte offset instead of starting over.
         guard fileManager.fileExists(atPath: modelFileURL.path),
               fileManager.fileExists(atPath: modelDirectoryURL.path) else {
             try? fileManager.removeItem(at: modelDirectoryURL)
             try? fileManager.removeItem(at: modelFileURL)
             userDefaults.set(false, forKey: completionKey)
-            userDefaults.removeObject(forKey: resumeDataKey)
             return false
         }
 
@@ -1178,6 +1231,9 @@ public enum CactusModelInitializationError: Error, Equatable {
 public actor CactusModelInitializationService {
     public typealias InitFunction = (String, String?, Bool) throws -> CactusModelT
     public typealias DestroyFunction = (CactusModelT) -> Void
+
+    /// Shared singleton — all components use one model handle, preventing double-load (~5.6 GB RAM).
+    public static let shared = CactusModelInitializationService()
 
     private let downloadService: ModelDownloadService
     private let initFunction: InitFunction

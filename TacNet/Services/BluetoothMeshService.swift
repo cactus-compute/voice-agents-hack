@@ -60,10 +60,13 @@ struct RecordedAudioClip: Sendable, Equatable {
 
         let threshold = abs(Int(amplitudeThreshold))
         var activeSamples = 0
+        var peakAmplitude = 0
         data.withUnsafeBytes { rawBuffer in
             let samples = rawBuffer.bindMemory(to: Int16.self)
             for sample in samples {
-                if abs(Int(sample)) >= threshold {
+                let amplitude = abs(Int(sample))
+                if amplitude > peakAmplitude { peakAmplitude = amplitude }
+                if amplitude >= threshold {
                     activeSamples += 1
                     if activeSamples >= minimumActiveSamples {
                         break
@@ -71,7 +74,11 @@ struct RecordedAudioClip: Sendable, Equatable {
                 }
             }
         }
-        return activeSamples >= minimumActiveSamples
+        let detected = activeSamples >= minimumActiveSamples
+        NSLog("[Audio] Speech check — peak amplitude: %d, active samples: %d/%d, threshold: %d → %@",
+              peakAmplitude, activeSamples, minimumActiveSamples, threshold,
+              detected ? "SPEECH" : "SILENCE")
+        return detected
     }
 }
 
@@ -102,7 +109,7 @@ actor CactusTranscriber: CactusTranscribing {
     private let transcribeFunction: TranscribeFunction
 
     init(
-        modelInitializationService: CactusModelInitializationService = CactusModelInitializationService(),
+        modelInitializationService: CactusModelInitializationService = .shared,
         transcribeFunction: @escaping TranscribeFunction = { model, pcmData in
             try cactusTranscribe(model, nil, nil, nil, nil, pcmData)
         }
@@ -189,7 +196,7 @@ actor CactusTacticalSummarizer: TacticalSummarizing {
     private let optionsJSON: String
 
     init(
-        modelInitializationService: CactusModelInitializationService = CactusModelInitializationService(),
+        modelInitializationService: CactusModelInitializationService = .shared,
         completeFunction: @escaping CompleteFunction = cactusComplete,
         optionsJSON: String = #"{"max_tokens":96,"temperature":0.0}"#
     ) {
@@ -915,8 +922,47 @@ final class AVAudioEngineRecorder: NSObject, AudioCapturing, @unchecked Sendable
             throw AudioServiceError.alreadyRecording
         }
 
+        // Log microphone permission status before touching the audio engine.
+        let micStatus: String
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:   micStatus = "granted"
+        case .denied:    micStatus = "DENIED"
+        case .undetermined: micStatus = "undetermined"
+        @unknown default: micStatus = "unknown"
+        }
+        NSLog("[Audio] Microphone permission: %@", micStatus)
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            NSLog("[Audio] ❌ Microphone permission not granted — recording will be silent")
+            // Don't throw here; let the user see the permission prompt via the UI.
+            // We continue so that if permission is later granted the engine can start.
+            return
+        }
+
+        // Configure the audio session for recording BEFORE touching AVAudioEngine.
+        // The default category (.soloAmbient) is playback-only; without .playAndRecord
+        // the inputNode produces silence with no error, which fails the hasSpeech check.
+        let session = AVAudioSession.sharedInstance()
+        do {
+            // .voiceChat enables proper mic gain + echo cancellation for speech input.
+            // .measurement was wrong — it disables hardware gain, causing near-zero amplitude.
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true)
+            NSLog("[Audio] Session category set to playAndRecord/voiceChat — input available: %@, gain: %.2f",
+                  session.isInputAvailable ? "yes" : "no", session.inputGain)
+        } catch {
+            NSLog("[Audio] ❌ Failed to configure audio session: %@", error.localizedDescription)
+            throw AudioServiceError.captureFailed("Audio session setup failed: \(error.localizedDescription)")
+        }
+
+        // NOTE: Do NOT call audioEngine.reset() here — it disconnects the inputNode
+        // from hardware and causes near-zero amplitude (silence) on the tap.
+
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        NSLog("[Audio] Input node format — sample rate: %.0f Hz, channels: %d, formatID: %u",
+              inputFormat.sampleRate, inputFormat.channelCount,
+              inputFormat.streamDescription.pointee.mFormatID)
+
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             throw AudioServiceError.invalidAudioFormat
         }
@@ -928,7 +974,22 @@ final class AVAudioEngineRecorder: NSObject, AudioCapturing, @unchecked Sendable
         captureLock.unlock()
 
         inputNode.removeTap(onBus: 0)
+        var tapCallCount = 0
         inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
+            tapCallCount += 1
+            if tapCallCount <= 3 || tapCallCount % 20 == 0 {
+                // Log first 3 callbacks and every 20th after to confirm tap is firing
+                var peak: Int16 = 0
+                if let ch = buffer.floatChannelData {
+                    let frameCount = Int(buffer.frameLength)
+                    for i in 0..<frameCount {
+                        let sample = Int16(ch[0][i] * 32767)
+                        if abs(sample) > abs(peak) { peak = sample }
+                    }
+                }
+                NSLog("[Audio] TAP callback #%d — frames: %d, peak: %d",
+                      tapCallCount, buffer.frameLength, peak)
+            }
             self?.appendConvertedBuffer(buffer)
         }
 
@@ -936,9 +997,11 @@ final class AVAudioEngineRecorder: NSObject, AudioCapturing, @unchecked Sendable
             audioEngine.prepare()
             try audioEngine.start()
             isCapturing = true
+            NSLog("[Audio] ✅ Recording started — engine running: %@", audioEngine.isRunning ? "yes" : "no")
         } catch {
             inputNode.removeTap(onBus: 0)
             self.converter = nil
+            NSLog("[Audio] ❌ Failed to start audio engine: %@", error.localizedDescription)
             throw AudioServiceError.captureFailed(error.localizedDescription)
         }
     }
@@ -1192,69 +1255,63 @@ struct DiscoveredNetwork: Identifiable, Equatable, Sendable {
 }
 
 private enum NetworkAdvertisementCodec {
-    private static let schemaVersion: UInt8 = 1
-    private static let requiresPINFlag: UInt8 = 1 << 0
-    private static let payloadLength = 20
-    private static let maxAdvertisedNameLength = 20
+    // CBPeripheralManager.startAdvertising only supports CBAdvertisementDataLocalNameKey
+    // and CBAdvertisementDataServiceUUIDsKey. ServiceData is a read-only central-side key
+    // and will crash with NSInvalidArgumentException if passed to startAdvertising.
+    //
+    // Metadata encoding: append "|XX" to the local name where XX is one hex byte:
+    //   bits [7:4] = openSlotCount clamped to 0-15
+    //   bit  [0]   = requiresPIN flag
+    // The real networkID is fetched via GATT treeConfig read during join.
+
+    private static let metaSuffixLength = 3  // "|XX"
+    private static let maxNetworkNameLength = 17  // 20 - 3 = 17 chars for the name itself
 
     static func advertisingData(for summary: NetworkAdvertisement) -> [String: Any] {
-        let clampedOpenSlots = UInt16(max(0, min(summary.openSlotCount, Int(UInt16.max))))
-        var payload = Data(capacity: payloadLength)
-        payload.append(schemaVersion)
-        payload.append(summary.requiresPIN ? requiresPINFlag : 0)
-        payload.append(UInt8((clampedOpenSlots >> 8) & 0xFF))
-        payload.append(UInt8(clampedOpenSlots & 0xFF))
-        payload.append(uuidData(summary.networkID))
+        let clampedSlots = min(summary.openSlotCount, 15)
+        let metaByte = UInt8((clampedSlots << 1) | (summary.requiresPIN ? 1 : 0))
+        let metaSuffix = String(format: "|%02X", metaByte)
 
-        let advertisedName = String(summary.networkName.prefix(maxAdvertisedNameLength))
+        let trimmedName = String(summary.networkName.prefix(maxNetworkNameLength))
+        let advertisedName = trimmedName + metaSuffix
+
         return [
             CBAdvertisementDataServiceUUIDsKey: [BluetoothMeshUUIDs.service],
-            CBAdvertisementDataLocalNameKey: advertisedName,
-            CBAdvertisementDataServiceDataKey: [BluetoothMeshUUIDs.service: payload]
+            CBAdvertisementDataLocalNameKey: advertisedName
         ]
     }
 
-    static func decode(advertisementData: [String: Any]) -> NetworkAdvertisement? {
-        guard let serviceData = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data],
-              let payload = serviceData[BluetoothMeshUUIDs.service],
-              payload.count >= payloadLength,
-              payload[0] == schemaVersion else {
+    // peerID is used as a proxy networkID; the real networkID is confirmed during GATT join.
+    static func decode(advertisementData: [String: Any], peerID: UUID) -> NetworkAdvertisement? {
+        guard let serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID],
+              serviceUUIDs.contains(BluetoothMeshUUIDs.service) else {
             return nil
         }
 
-        let flags = payload[1]
-        let openSlotCount = Int((UInt16(payload[2]) << 8) | UInt16(payload[3]))
-        guard let networkID = uuid(from: payload.subdata(in: 4..<20)) else {
-            return nil
+        let rawName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
+
+        var networkName = rawName
+        var openSlotCount = 0
+        var requiresPIN = false
+
+        if rawName.count >= metaSuffixLength {
+            let suffix = String(rawName.suffix(metaSuffixLength))
+            if suffix.first == "|", let metaByte = UInt8(suffix.dropFirst(), radix: 16) {
+                networkName = String(rawName.dropLast(metaSuffixLength))
+                requiresPIN = (metaByte & 0x01) != 0
+                openSlotCount = Int((metaByte >> 1) & 0x0F)
+            }
         }
 
-        let advertisedName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let networkName = (advertisedName?.isEmpty == false) ? advertisedName! : "TacNet Network"
+        networkName = networkName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if networkName.isEmpty { networkName = "TacNet Network" }
 
         return NetworkAdvertisement(
-            networkID: networkID,
+            networkID: peerID,
             networkName: networkName,
             openSlotCount: openSlotCount,
-            requiresPIN: (flags & requiresPINFlag) != 0
+            requiresPIN: requiresPIN
         )
-    }
-
-    private static func uuidData(_ uuid: UUID) -> Data {
-        var rawUUID = uuid.uuid
-        return withUnsafeBytes(of: &rawUUID) { Data($0) }
-    }
-
-    private static func uuid(from data: Data) -> UUID? {
-        guard data.count == 16 else {
-            return nil
-        }
-
-        var rawUUID: uuid_t = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-        _ = withUnsafeMutableBytes(of: &rawUUID) { destination in
-            data.copyBytes(to: destination)
-        }
-        return UUID(uuid: rawUUID)
     }
 }
 
@@ -1603,6 +1660,10 @@ final class CoreBluetoothMeshTransport: NSObject, BluetoothMeshTransporting {
     }()
 
     func start() {
+        NSLog("[BLE] start() — central: %@, peripheral: %@",
+              centralManager == nil ? "nil" : centralManager!.state.logDescription,
+              peripheralManager == nil ? "nil" : peripheralManager!.state.logDescription)
+
         if centralManager == nil {
             centralManager = CBCentralManager(delegate: self, queue: nil)
         }
@@ -1620,6 +1681,7 @@ final class CoreBluetoothMeshTransport: NSObject, BluetoothMeshTransporting {
     }
 
     func stop() {
+        NSLog("[BLE] stop()")
         centralManager?.stopScan()
         for peripheral in connectedPeripherals.values {
             centralManager?.cancelPeripheralConnection(peripheral)
@@ -1700,6 +1762,7 @@ final class CoreBluetoothMeshTransport: NSObject, BluetoothMeshTransporting {
     }
 
     private func startScanning() {
+        NSLog("[BLE] Scanning for TacNet peripherals…")
         centralManager?.scanForPeripherals(
             withServices: [BluetoothMeshUUIDs.service],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -1713,8 +1776,12 @@ final class CoreBluetoothMeshTransport: NSObject, BluetoothMeshTransporting {
 
         peripheralManager.stopAdvertising()
         if let advertisedNetworkSummary {
+            NSLog("[BLE] Advertising network '%@' (slots: %d, PIN: %@)",
+                  advertisedNetworkSummary.networkName, advertisedNetworkSummary.openSlotCount,
+                  advertisedNetworkSummary.requiresPIN ? "yes" : "no")
             peripheralManager.startAdvertising(NetworkAdvertisementCodec.advertisingData(for: advertisedNetworkSummary))
         } else {
+            NSLog("[BLE] Advertising (no network — service UUID only)")
             peripheralManager.startAdvertising([
                 CBAdvertisementDataServiceUUIDsKey: [BluetoothMeshUUIDs.service]
             ])
@@ -1780,6 +1847,7 @@ final class CoreBluetoothMeshTransport: NSObject, BluetoothMeshTransporting {
 
 extension CoreBluetoothMeshTransport: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        NSLog("[BLE] Central state → %@", central.state.logDescription)
         guard central.state == .poweredOn else {
             return
         }
@@ -1792,20 +1860,28 @@ extension CoreBluetoothMeshTransport: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        let name = peripheral.name ?? "unnamed"
         discoveredPeripherals[peripheral.identifier] = peripheral
         eventHandler?(.discoveredPeer(peripheral.identifier))
-        if let advertisement = NetworkAdvertisementCodec.decode(advertisementData: advertisementData) {
+        if let advertisement = NetworkAdvertisementCodec.decode(advertisementData: advertisementData, peerID: peripheral.identifier) {
+            NSLog("[BLE] Discovered network '%@' from peer %@ (slots: %d, PIN: %@)",
+                  advertisement.networkName, peripheral.identifier.uuidString,
+                  advertisement.openSlotCount, advertisement.requiresPIN ? "yes" : "no")
             eventHandler?(.discoveredNetwork(peripheral.identifier, advertisement))
+        } else {
+            NSLog("[BLE] Discovered peer %@ ('%@') — no TacNet advertisement", peripheral.identifier.uuidString, name)
         }
 
         if connectedPeripherals[peripheral.identifier] == nil,
            !connectingPeripheralIDs.contains(peripheral.identifier) {
+            NSLog("[BLE] Connecting to peer %@…", peripheral.identifier.uuidString)
             connectingPeripheralIDs.insert(peripheral.identifier)
             central.connect(peripheral, options: nil)
         }
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        NSLog("[BLE] ✅ Connected to peer %@", peripheral.identifier.uuidString)
         connectingPeripheralIDs.remove(peripheral.identifier)
         connectedPeripherals[peripheral.identifier] = peripheral
         eventHandler?(.connectionStateChanged(peripheral.identifier, .connected))
@@ -1816,6 +1892,8 @@ extension CoreBluetoothMeshTransport: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        NSLog("[BLE] ❌ Failed to connect to peer %@: %@",
+              peripheral.identifier.uuidString, error?.localizedDescription ?? "unknown")
         connectingPeripheralIDs.remove(peripheral.identifier)
         eventHandler?(.connectionStateChanged(peripheral.identifier, .disconnected))
         completeTreeConfigReads(
@@ -1829,6 +1907,8 @@ extension CoreBluetoothMeshTransport: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        NSLog("[BLE] Peer %@ disconnected%@", peripheral.identifier.uuidString,
+              error != nil ? " (error: \(error!.localizedDescription))" : "")
         connectingPeripheralIDs.remove(peripheral.identifier)
         connectedPeripherals.removeValue(forKey: peripheral.identifier)
         discoveredCharacteristicsByPeer.removeValue(forKey: peripheral.identifier)
@@ -1911,6 +1991,7 @@ extension CoreBluetoothMeshTransport: CBPeripheralDelegate {
 
 extension CoreBluetoothMeshTransport: CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        NSLog("[BLE] Peripheral state → %@", peripheral.state.logDescription)
         guard peripheral.state == .poweredOn else {
             return
         }
@@ -1920,9 +2001,11 @@ extension CoreBluetoothMeshTransport: CBPeripheralManagerDelegate {
     }
 
     func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
-        guard error == nil else {
+        if let error {
+            NSLog("[BLE] ❌ Failed to add GATT service: %@", error.localizedDescription)
             return
         }
+        NSLog("[BLE] ✅ GATT service published")
         startAdvertising()
     }
 
@@ -1963,6 +2046,8 @@ extension CoreBluetoothMeshTransport: CBPeripheralManagerDelegate {
         central: CBCentral,
         didSubscribeTo characteristic: CBCharacteristic
     ) {
+        NSLog("[BLE] ✅ Central %@ subscribed to characteristic %@",
+              central.identifier.uuidString, characteristic.uuid.uuidString)
         subscribedCentrals[central.identifier] = central
         eventHandler?(.connectionStateChanged(central.identifier, .connected))
     }
@@ -1972,6 +2057,7 @@ extension CoreBluetoothMeshTransport: CBPeripheralManagerDelegate {
         central: CBCentral,
         didUnsubscribeFrom characteristic: CBCharacteristic
     ) {
+        NSLog("[BLE] Central %@ unsubscribed", central.identifier.uuidString)
         subscribedCentrals.removeValue(forKey: central.identifier)
         eventHandler?(.connectionStateChanged(central.identifier, .disconnected))
     }
@@ -2616,11 +2702,14 @@ final class RoleClaimService: ObservableObject {
     }
 
     func claim(nodeID: String) -> RoleClaimResult {
+        NSLog("[Role] Attempting to claim node '%@'", nodeID)
         guard var config = networkConfig else {
+            NSLog("[Role] ❌ Claim failed — no network config")
             return .unavailable
         }
 
         guard let node = findNode(withID: nodeID, in: config.tree) else {
+            NSLog("[Role] ❌ Claim failed — node not found")
             lastClaimRejection = .nodeNotFound
             return .rejected(reason: .nodeNotFound)
         }
@@ -2631,6 +2720,7 @@ final class RoleClaimService: ObservableObject {
                     return .unavailable
                 }
 
+                NSLog("[Role] ✅ Organiser override — claimed '%@' (was held by %@)", node.label, existingClaim)
                 applyUpdatedConfig(config)
                 publishClaim(nodeID: nodeID, claimantID: localDeviceID, in: config)
                 publishClaimRejected(
@@ -2644,6 +2734,7 @@ final class RoleClaimService: ObservableObject {
                 return .claimed(nodeID: nodeID)
             }
 
+            NSLog("[Role] ❌ Claim rejected — node '%@' already claimed by %@", node.label, existingClaim)
             lastClaimRejection = .alreadyClaimed
             return .rejected(reason: .alreadyClaimed)
         }
@@ -2652,6 +2743,7 @@ final class RoleClaimService: ObservableObject {
             return .unavailable
         }
 
+        NSLog("[Role] ✅ Claimed node '%@' (%@)", node.label, nodeID)
         applyUpdatedConfig(config)
         publishClaim(nodeID: nodeID, claimantID: localDeviceID, in: config)
         lastClaimRejection = nil
@@ -3381,6 +3473,22 @@ final class RoleClaimService: ObservableObject {
 
         for child in tree.children {
             collectClaimedNodeIDs(by: ownerID, in: child, into: &collection)
+        }
+    }
+}
+
+// MARK: - Log helpers
+
+private extension CBManagerState {
+    var logDescription: String {
+        switch self {
+        case .unknown: return "unknown"
+        case .resetting: return "resetting"
+        case .unsupported: return "unsupported"
+        case .unauthorized: return "unauthorized"
+        case .poweredOff: return "poweredOff"
+        case .poweredOn: return "poweredOn"
+        @unknown default: return "unknown(\(rawValue))"
         }
     }
 }
