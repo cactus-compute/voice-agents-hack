@@ -1624,6 +1624,304 @@ final class TacNetTests: XCTestCase {
         XCTAssertEqual(history.count, 1)
     }
 
+    func testCompactionEngineTimeWindowTriggerFiresAfterConfiguredWindow() async throws {
+        let tree = makeFixtureTree()
+        let summarizer = MockTacticalSummarizer(outputs: [
+            "Grid 12 east hostile movement, Alpha holding."
+        ])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: tree,
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 0.05, messageCountThreshold: 5, defaultTTL: 6)
+        )
+
+        await engine.enqueueChildTranscript(
+            "Alpha-1 reports hostile movement near grid 12 east; one hostile observed; status holding.",
+            from: "alpha-1"
+        )
+
+        let triggered = await waitForCondition(timeout: 1.0) {
+            let emissions = await engine.emittedCompactions()
+            return emissions.count == 1
+        }
+        XCTAssertTrue(triggered, "Expected time-window trigger to emit a compaction")
+
+        let emissions = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissions.first)
+        XCTAssertEqual(emission.triggerReason, .timeWindow)
+        XCTAssertEqual(emission.sourceMessageCount, 1)
+        XCTAssertEqual(emission.message.type, .compaction)
+        XCTAssertEqual(emission.message.parentID, "root")
+        XCTAssertEqual(emission.message.ttl, 6)
+    }
+
+    func testCompactionEngineCountThresholdTriggersAtBoundary() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: ["Alpha sector summary with threat and status."])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 3, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript("Alpha-1 movement at grid A1", from: "alpha-1")
+        await engine.enqueueChildTranscript("Alpha-2 no visual on threat", from: "alpha-2")
+        let emissionsBeforeThreshold = await engine.emittedCompactions()
+        XCTAssertTrue(emissionsBeforeThreshold.isEmpty)
+
+        await engine.enqueueChildTranscript("Alpha-1 status green", from: "alpha-1")
+        let emissionsAfterThreshold = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissionsAfterThreshold.first)
+        XCTAssertEqual(emission.triggerReason, .messageCount)
+        XCTAssertEqual(emission.sourceMessageCount, 3)
+    }
+
+    func testCompactionEnginePriorityKeywordsTriggerImmediatelyCaseInsensitive() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: ["Emergency contact summary."])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 10, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript("Patrol reports EMERGENCY near checkpoint bravo.", from: "alpha-1")
+
+        let emissions = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissions.first)
+        XCTAssertEqual(emission.triggerReason, .priorityKeyword)
+        XCTAssertEqual(emission.sourceMessageCount, 1)
+    }
+
+    func testCompactionEnginePriorityKeywordPositionInvariantAndRejectsSubstrings() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: [
+            "Start keyword summary",
+            "Middle keyword summary",
+            "End keyword summary"
+        ])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 10, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript("Contact observed at north ridge.", from: "alpha-1")
+        await engine.enqueueChildTranscript("Alpha-2 reports casualty at waypoint 3.", from: "alpha-2")
+        await engine.enqueueChildTranscript("Unit remains stable until emergency", from: "alpha-1")
+        let keywordEmissions = await engine.emittedCompactions()
+        XCTAssertEqual(keywordEmissions.count, 3, "Keyword should trigger at start/middle/end")
+
+        await engine.enqueueChildTranscript("Alpha team contacted support and moved out.", from: "alpha-1")
+        await engine.enqueueChildTranscript("Subcontract convoy passing through corridor.", from: "alpha-2")
+        await engine.enqueueChildTranscript("Casualties expected if weather worsens.", from: "alpha-1")
+        let finalEmissions = await engine.emittedCompactions()
+        XCTAssertEqual(finalEmissions.count, 3, "Substring matches must not trigger immediate compaction")
+    }
+
+    func testCompactionEngineSummaryIsUnderThirtyWordsWithoutFillerAndKeepsCriticalInfo() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: [
+            """
+            Uh um copy that roger say again over. Grid nine east has two hostiles and one casualty. \
+            Alpha squad status stable while Bravo secures extraction route immediately.
+            """
+        ])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 1, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript(
+            "Grid nine east reports two hostiles, one casualty, Alpha stable, Bravo securing extraction.",
+            from: "alpha-1"
+        )
+
+        let emissions = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissions.first)
+        let summary = try XCTUnwrap(emission.message.payload.summary)
+        XCTAssertLessThanOrEqual(summary.split(whereSeparator: \.isWhitespace).count, 30)
+
+        let lowered = summary.lowercased()
+        ["uh", "um", "copy that", "roger", "say again", "over"].forEach { filler in
+            XCTAssertFalse(lowered.contains(filler), "Summary should remove filler phrase: \(filler)")
+        }
+        XCTAssertTrue(lowered.contains("grid"))
+        XCTAssertTrue(lowered.contains("hostiles"))
+        XCTAssertTrue(lowered.contains("status"))
+    }
+
+    func testCompactionEngineSingleMessageCompactionIsValid() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: [
+            "Grid seven north contact suppressed, one casualty stable, Alpha holding perimeter."
+        ])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 1, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript("Alpha-1 contact grid seven north, casualty stable.", from: "alpha-1")
+
+        let emissions = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissions.first)
+        XCTAssertEqual(emission.sourceMessageCount, 1)
+        XCTAssertLessThanOrEqual(
+            (emission.message.payload.summary ?? "").split(whereSeparator: \.isWhitespace).count,
+            30
+        )
+    }
+
+    func testCompactionEngineHandlesTwentyMessagesWithoutDroppingContext() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: ["Twenty-message tactical compaction summary."])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 20, defaultTTL: 8)
+        )
+
+        for index in 1...20 {
+            await engine.enqueueChildTranscript("Report \(index): status update at grid \(index).", from: "alpha-1")
+        }
+
+        let emissions = await engine.emittedCompactions()
+        let emission = try XCTUnwrap(emissions.first)
+        XCTAssertEqual(emission.sourceMessageCount, 20)
+
+        let invocations = await summarizer.invocations()
+        let prompt = try XCTUnwrap(invocations.first?.userPrompt.lowercased())
+        XCTAssertTrue(prompt.contains("report 1"))
+        XCTAssertTrue(prompt.contains("report 20"))
+    }
+
+    func testCompactionEngineUsesTacticalSummarizerPromptRequirements() async throws {
+        let summarizer = MockTacticalSummarizer(outputs: ["Prompt verification summary."])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: makeFixtureTree(),
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 1, defaultTTL: 8)
+        )
+
+        await engine.enqueueChildTranscript("Alpha-1 reports contact on east ridge.", from: "alpha-1")
+        _ = await engine.emittedCompactions()
+
+        let invocations = await summarizer.invocations()
+        let invocation = try XCTUnwrap(invocations.first)
+        let prompt = invocation.systemPrompt.lowercased()
+        XCTAssertTrue(prompt.contains("preserve"))
+        XCTAssertTrue(prompt.contains("location"))
+        XCTAssertTrue(prompt.contains("threat"))
+        XCTAssertTrue(prompt.contains("status"))
+        XCTAssertTrue(prompt.contains("remove filler"))
+        XCTAssertTrue(prompt.contains("under 30 words"))
+    }
+
+    func testCompactionEngineEmittedCompactionRoutesOnlyToParent() async throws {
+        let tree = makeFixtureTree()
+        let summarizer = MockTacticalSummarizer(outputs: ["Alpha contact summary for parent."])
+        let engine = makeCompactionEngine(
+            localNodeID: "alpha",
+            localDeviceID: "alpha-device",
+            localRole: "alpha-lead",
+            tree: tree,
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 1, defaultTTL: 8)
+        )
+        let router = MessageRouter()
+
+        await engine.enqueueChildTranscript("Alpha-1 reports contact east.", from: "alpha-1")
+        let emissions = await engine.emittedCompactions()
+        let message = try XCTUnwrap(emissions.first?.message)
+
+        XCTAssertTrue(router.shouldDisplay(message, for: "root", in: tree))
+        XCTAssertFalse(router.shouldDisplay(message, for: "alpha-1", in: tree))
+        XCTAssertFalse(router.shouldDisplay(message, for: "alpha-2", in: tree))
+        XCTAssertFalse(router.shouldDisplay(message, for: "bravo", in: tree))
+        XCTAssertFalse(router.shouldDisplay(message, for: "charlie-1", in: tree))
+    }
+
+    func testCompactionEngineRootProducesSitrepFromL1CompactionsOnly() async throws {
+        let tree = makeFixtureTree()
+        let summarizer = MockTacticalSummarizer(outputs: ["Sitrep: contact east, one casualty, alpha holding, bravo securing route."])
+        let engine = makeCompactionEngine(
+            localNodeID: "root",
+            localDeviceID: "root-device",
+            localRole: "commander",
+            tree: tree,
+            summarizer: summarizer,
+            configuration: .init(timeWindow: 30, messageCountThreshold: 2, defaultTTL: 8)
+        )
+
+        await engine.enqueueL1CompactionSummary("Should ignore non-L1 source.", from: "alpha-1")
+        let ignoredSitrep = await engine.latestSITREP()
+        XCTAssertNil(ignoredSitrep)
+
+        await engine.enqueueL1CompactionSummary("Alpha engagement east, one injured, status holding.", from: "alpha")
+        await engine.enqueueL1CompactionSummary("Bravo route secure, status green and moving.", from: "bravo")
+
+        let latestSitrep = await engine.latestSITREP()
+        let sitrep = try XCTUnwrap(latestSitrep)
+        XCTAssertEqual(sitrep.triggerReason, .messageCount)
+        XCTAssertEqual(sitrep.sourceMessageCount, 2)
+        XCTAssertFalse(sitrep.text.isEmpty)
+        let rootEmissions = await engine.emittedCompactions()
+        XCTAssertTrue(rootEmissions.isEmpty, "Root should produce SITREP, not upward compaction messages")
+    }
+
+    private func makeCompactionEngine(
+        localNodeID: String,
+        localDeviceID: String,
+        localRole: String,
+        tree: TreeNode,
+        summarizer: any TacticalSummarizing,
+        configuration: CompactionEngine.Configuration
+    ) -> CompactionEngine {
+        CompactionEngine(
+            localDeviceID: localDeviceID,
+            localNodeID: localNodeID,
+            localSenderRole: localRole,
+            initialTree: tree,
+            summarizer: summarizer,
+            configuration: configuration
+        )
+    }
+
+    private func waitForCondition(
+        timeout: TimeInterval,
+        pollIntervalNanoseconds: UInt64 = 10_000_000,
+        condition: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+        }
+        return await condition()
+    }
+
     private func makePCMClip(
         samples: [Int16],
         sampleRate: Int = 16_000,
@@ -2025,6 +2323,37 @@ private actor MockTranscriptConsumer: TranscriptConsuming {
 
     func received() -> [AudioService.TranscriptResult] {
         transcripts
+    }
+}
+
+private actor MockTacticalSummarizer: TacticalSummarizing {
+    struct Invocation: Equatable, Sendable {
+        let systemPrompt: String
+        let userPrompt: String
+    }
+
+    private var outputs: [String]
+    private let delayNanoseconds: UInt64
+    private var recordedInvocations: [Invocation] = []
+
+    init(outputs: [String], delayNanoseconds: UInt64 = 0) {
+        self.outputs = outputs
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func summarize(systemPrompt: String, userPrompt: String) async throws -> String {
+        recordedInvocations.append(Invocation(systemPrompt: systemPrompt, userPrompt: userPrompt))
+        if delayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+        if outputs.isEmpty {
+            return userPrompt
+        }
+        return outputs.removeFirst()
+    }
+
+    func invocations() -> [Invocation] {
+        recordedInvocations
     }
 }
 

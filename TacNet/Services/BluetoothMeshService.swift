@@ -165,6 +165,486 @@ actor CactusTranscriber: CactusTranscribing {
     }
 }
 
+protocol TacticalSummarizing: Sendable {
+    func summarize(systemPrompt: String, userPrompt: String) async throws -> String
+}
+
+actor CactusTacticalSummarizer: TacticalSummarizing {
+    typealias CompleteFunction = @Sendable (
+        CactusModelT,
+        String,
+        String?,
+        String?,
+        ((String, UInt32) -> Void)?,
+        Data?
+    ) throws -> String
+
+    private struct PromptMessage: Codable {
+        let role: String
+        let content: String
+    }
+
+    private let modelInitializationService: CactusModelInitializationService
+    private let completeFunction: CompleteFunction
+    private let optionsJSON: String
+
+    init(
+        modelInitializationService: CactusModelInitializationService = CactusModelInitializationService(),
+        completeFunction: @escaping CompleteFunction = cactusComplete,
+        optionsJSON: String = #"{"max_tokens":96,"temperature":0.0}"#
+    ) {
+        self.modelInitializationService = modelInitializationService
+        self.completeFunction = completeFunction
+        self.optionsJSON = optionsJSON
+    }
+
+    func summarize(systemPrompt: String, userPrompt: String) async throws -> String {
+        let modelHandle = try await modelInitializationService.initializeModelAfterEnsuringDownload()
+        let messagesJSON = try Self.messagesJSON(systemPrompt: systemPrompt, userPrompt: userPrompt)
+        let completion = try completeFunction(modelHandle, messagesJSON, optionsJSON, nil, nil, nil)
+        return Self.extractSummary(from: completion)
+    }
+
+    private static func messagesJSON(systemPrompt: String, userPrompt: String) throws -> String {
+        let payload = [
+            PromptMessage(role: "system", content: systemPrompt),
+            PromptMessage(role: "user", content: userPrompt)
+        ]
+        let data = try JSONEncoder().encode(payload)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func extractSummary(from response: String) -> String {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return trimmed
+        }
+
+        if let responseValue = firstNonEmptyValue(for: ["response", "summary", "text"], in: json) {
+            return responseValue
+        }
+
+        if let nestedResult = json["result"] as? [String: Any],
+           let responseValue = firstNonEmptyValue(for: ["response", "summary", "text"], in: nestedResult) {
+            return responseValue
+        }
+
+        return trimmed
+    }
+
+    private static func firstNonEmptyValue(for keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            if let value = object[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+        return nil
+    }
+}
+
+actor CompactionEngine {
+    enum TriggerReason: String, Equatable, Sendable {
+        case timeWindow
+        case messageCount
+        case priorityKeyword
+        case manual
+    }
+
+    struct Configuration: Equatable, Sendable {
+        var timeWindow: TimeInterval
+        var messageCountThreshold: Int
+        var defaultTTL: Int
+
+        init(
+            timeWindow: TimeInterval = 8,
+            messageCountThreshold: Int = 5,
+            defaultTTL: Int = 8
+        ) {
+            self.timeWindow = max(0, timeWindow)
+            self.messageCountThreshold = max(1, messageCountThreshold)
+            self.defaultTTL = max(1, defaultTTL)
+        }
+    }
+
+    struct CompactionEmission: Equatable, Sendable {
+        let message: Message
+        let triggerReason: TriggerReason
+        let sourceMessageCount: Int
+        let summaryWordCount: Int
+        let generatedAt: Date
+    }
+
+    struct SITREP: Equatable, Sendable {
+        let text: String
+        let triggerReason: TriggerReason
+        let sourceMessageCount: Int
+        let generatedAt: Date
+    }
+
+    private struct QueueItem: Sendable {
+        let body: String
+        let sourceNodeID: String
+        let receivedAt: Date
+    }
+
+    private let localDeviceID: String
+    private let localNodeID: String
+    private let localSenderRole: String
+    private let messageRouter: MessageRouter
+    private let summarizer: any TacticalSummarizing
+    private let configuration: Configuration
+    private let now: @Sendable () -> Date
+    private let sleep: @Sendable (UInt64) async -> Void
+
+    private var tree: TreeNode
+
+    private var queuedChildTranscripts: [QueueItem] = []
+    private var queuedL1Compactions: [QueueItem] = []
+
+    private var childCompactionTimerTask: Task<Void, Never>?
+    private var sitrepTimerTask: Task<Void, Never>?
+
+    private var compactionEmissionsStorage: [CompactionEmission] = []
+    private var latestSitrepStorage: SITREP?
+
+    init(
+        localDeviceID: String,
+        localNodeID: String,
+        localSenderRole: String,
+        initialTree: TreeNode,
+        messageRouter: MessageRouter = MessageRouter(),
+        summarizer: any TacticalSummarizing = CactusTacticalSummarizer(),
+        configuration: Configuration = Configuration(),
+        now: @escaping @Sendable () -> Date = Date.init,
+        sleep: @escaping @Sendable (UInt64) async -> Void = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
+    ) {
+        self.localDeviceID = localDeviceID
+        self.localNodeID = localNodeID
+        self.localSenderRole = localSenderRole
+        self.tree = initialTree
+        self.messageRouter = messageRouter
+        self.summarizer = summarizer
+        self.configuration = configuration
+        self.now = now
+        self.sleep = sleep
+    }
+
+    deinit {
+        childCompactionTimerTask?.cancel()
+        sitrepTimerTask?.cancel()
+    }
+
+    func updateTree(_ tree: TreeNode) {
+        self.tree = tree
+    }
+
+    func enqueueChildTranscript(_ transcript: String, from childNodeID: String) async {
+        guard isDirectChild(nodeID: childNodeID) else {
+            return
+        }
+
+        let normalizedTranscript = normalizedInput(transcript)
+        guard !normalizedTranscript.isEmpty else {
+            return
+        }
+
+        queuedChildTranscripts.append(
+            QueueItem(body: normalizedTranscript, sourceNodeID: childNodeID, receivedAt: now())
+        )
+
+        if Self.containsPriorityKeyword(in: normalizedTranscript) {
+            await triggerChildCompaction(reason: .priorityKeyword)
+            return
+        }
+
+        if queuedChildTranscripts.count >= configuration.messageCountThreshold {
+            await triggerChildCompaction(reason: .messageCount)
+            return
+        }
+
+        scheduleChildCompactionTimerIfNeeded()
+    }
+
+    func enqueueL1CompactionSummary(_ summary: String, from childNodeID: String) async {
+        guard isRootNode, isDirectChild(nodeID: childNodeID) else {
+            return
+        }
+
+        let normalizedSummary = normalizedInput(summary)
+        guard !normalizedSummary.isEmpty else {
+            return
+        }
+
+        queuedL1Compactions.append(
+            QueueItem(body: normalizedSummary, sourceNodeID: childNodeID, receivedAt: now())
+        )
+
+        if Self.containsPriorityKeyword(in: normalizedSummary) {
+            await triggerSITREP(reason: .priorityKeyword)
+            return
+        }
+
+        if queuedL1Compactions.count >= configuration.messageCountThreshold {
+            await triggerSITREP(reason: .messageCount)
+            return
+        }
+
+        scheduleSITREPTimerIfNeeded()
+    }
+
+    func flushQueuedChildTranscripts() async {
+        await triggerChildCompaction(reason: .manual)
+    }
+
+    func flushQueuedL1Compactions() async {
+        await triggerSITREP(reason: .manual)
+    }
+
+    func emittedCompactions() -> [CompactionEmission] {
+        compactionEmissionsStorage
+    }
+
+    func latestSITREP() -> SITREP? {
+        latestSitrepStorage
+    }
+
+    private var isRootNode: Bool {
+        TreeHelpers.level(of: localNodeID, in: tree) == 0
+    }
+
+    private func isDirectChild(nodeID: String) -> Bool {
+        TreeHelpers.parent(of: nodeID, in: tree)?.id == localNodeID
+    }
+
+    private func scheduleChildCompactionTimerIfNeeded() {
+        guard childCompactionTimerTask == nil, !queuedChildTranscripts.isEmpty else {
+            return
+        }
+
+        let delayNanoseconds = Self.nanoseconds(from: configuration.timeWindow)
+        childCompactionTimerTask = Task { [sleep] in
+            await sleep(delayNanoseconds)
+            guard !Task.isCancelled else {
+                return
+            }
+            await self.handleChildCompactionTimerFired()
+        }
+    }
+
+    private func scheduleSITREPTimerIfNeeded() {
+        guard sitrepTimerTask == nil, !queuedL1Compactions.isEmpty else {
+            return
+        }
+
+        let delayNanoseconds = Self.nanoseconds(from: configuration.timeWindow)
+        sitrepTimerTask = Task { [sleep] in
+            await sleep(delayNanoseconds)
+            guard !Task.isCancelled else {
+                return
+            }
+            await self.handleSITREPTimerFired()
+        }
+    }
+
+    private func handleChildCompactionTimerFired() async {
+        childCompactionTimerTask = nil
+        guard !queuedChildTranscripts.isEmpty else {
+            return
+        }
+        await triggerChildCompaction(reason: .timeWindow)
+    }
+
+    private func handleSITREPTimerFired() async {
+        sitrepTimerTask = nil
+        guard !queuedL1Compactions.isEmpty else {
+            return
+        }
+        await triggerSITREP(reason: .timeWindow)
+    }
+
+    private func triggerChildCompaction(reason: TriggerReason) async {
+        guard !queuedChildTranscripts.isEmpty else {
+            return
+        }
+
+        childCompactionTimerTask?.cancel()
+        childCompactionTimerTask = nil
+
+        let queuedItems = queuedChildTranscripts
+        queuedChildTranscripts.removeAll(keepingCapacity: true)
+
+        guard TreeHelpers.parent(of: localNodeID, in: tree) != nil else {
+            return
+        }
+
+        let summary = await summarizeChildTranscripts(queuedItems)
+        guard !summary.isEmpty else {
+            return
+        }
+
+        let timestamp = now()
+        let compactionMessage = messageRouter.makeCompactionMessage(
+            summary: summary,
+            senderID: localDeviceID,
+            senderNodeID: localNodeID,
+            senderRole: localSenderRole,
+            in: tree,
+            ttl: configuration.defaultTTL,
+            encrypted: false,
+            timestamp: timestamp
+        )
+
+        compactionEmissionsStorage.append(
+            CompactionEmission(
+                message: compactionMessage,
+                triggerReason: reason,
+                sourceMessageCount: queuedItems.count,
+                summaryWordCount: Self.wordCount(in: summary),
+                generatedAt: timestamp
+            )
+        )
+    }
+
+    private func triggerSITREP(reason: TriggerReason) async {
+        guard !queuedL1Compactions.isEmpty else {
+            return
+        }
+
+        sitrepTimerTask?.cancel()
+        sitrepTimerTask = nil
+
+        guard isRootNode else {
+            queuedL1Compactions.removeAll(keepingCapacity: true)
+            return
+        }
+
+        let queuedItems = queuedL1Compactions
+        queuedL1Compactions.removeAll(keepingCapacity: true)
+
+        let sitrepText = await summarizeL1Compactions(queuedItems)
+        guard !sitrepText.isEmpty else {
+            return
+        }
+
+        latestSitrepStorage = SITREP(
+            text: sitrepText,
+            triggerReason: reason,
+            sourceMessageCount: queuedItems.count,
+            generatedAt: now()
+        )
+    }
+
+    private func summarizeChildTranscripts(_ transcripts: [QueueItem]) async -> String {
+        await summarize(
+            entries: transcripts,
+            systemPrompt: Self.compactionSystemPrompt,
+            promptPrefix: "Summarize these child tactical transcripts into one update:"
+        )
+    }
+
+    private func summarizeL1Compactions(_ compactions: [QueueItem]) async -> String {
+        await summarize(
+            entries: compactions,
+            systemPrompt: Self.sitrepSystemPrompt,
+            promptPrefix: "Produce a commander SITREP from these L1 compactions:"
+        )
+    }
+
+    private func summarize(
+        entries: [QueueItem],
+        systemPrompt: String,
+        promptPrefix: String
+    ) async -> String {
+        let numberedLines = entries.enumerated().map { index, item in
+            "\(index + 1). \(item.body)"
+        }.joined(separator: "\n")
+        let userPrompt = "\(promptPrefix)\n\(numberedLines)"
+
+        let generated: String
+        do {
+            generated = try await summarizer.summarize(systemPrompt: systemPrompt, userPrompt: userPrompt)
+        } catch {
+            generated = entries.map(\.body).joined(separator: " ")
+        }
+
+        return Self.sanitizeSummary(generated, maxWords: 30)
+    }
+
+    private func normalizedInput(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static let compactionSystemPrompt = """
+    You are TacNet's tactical summarizer.
+    Preserve critical information: locations, threats, casualty details, and unit status.
+    Remove filler language (uh, um, copy that, roger, say again, over).
+    Return plain text only and keep the summary under 30 words.
+    """
+
+    private static let sitrepSystemPrompt = """
+    You are TacNet's root SITREP summarizer.
+    Preserve critical information: locations, threats, casualty details, and unit status from L1 compactions.
+    Remove filler language (uh, um, copy that, roger, say again, over).
+    Return plain text only and keep the SITREP under 30 words.
+    """
+
+    private static let priorityKeywordRegex: NSRegularExpression = {
+        let pattern = #"(?<![A-Za-z0-9_])(contact|casualty|emergency)(?![A-Za-z0-9_])"#
+        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }()
+
+    private static func containsPriorityKeyword(in text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return priorityKeywordRegex.firstMatch(in: text, options: [], range: range) != nil
+    }
+
+    private static func sanitizeSummary(_ raw: String, maxWords: Int) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            return ""
+        }
+
+        value = replacingMatches(#"(?i)\bcopy\s+that\b"#, in: value, with: " ")
+        value = replacingMatches(#"(?i)\bsay\s+again\b"#, in: value, with: " ")
+        value = replacingMatches(#"(?i)\b(?:uh+|um+|roger|over)\b"#, in: value, with: " ")
+        value = replacingMatches(#"\s+"#, in: value, with: " ")
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let words = value.split(whereSeparator: \.isWhitespace)
+        guard !words.isEmpty else {
+            return "No actionable update."
+        }
+
+        return words.prefix(max(1, maxWords)).joined(separator: " ")
+    }
+
+    private static func replacingMatches(_ pattern: String, in value: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return regex.stringByReplacingMatches(in: value, options: [], range: range, withTemplate: replacement)
+    }
+
+    private static func nanoseconds(from seconds: TimeInterval) -> UInt64 {
+        let clamped = max(0, seconds)
+        return UInt64(clamped * 1_000_000_000)
+    }
+
+    private static func wordCount(in value: String) -> Int {
+        value.split(whereSeparator: \.isWhitespace).count
+    }
+}
+
 final class AVAudioEngineRecorder: NSObject, AudioCapturing, @unchecked Sendable {
     private let audioEngine: AVAudioEngine
     private let targetFormat: AVAudioFormat
