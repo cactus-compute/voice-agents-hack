@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		1DCCC616FCABDDA833533698 /* CactusFunctionProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */; };
+		22811F4EAE3A4C3BA68A7A21 /* DataModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E9431F9B30497E8EDB9430 /* DataModels.swift */; };
 		3648F7E613F44A65D04613DE /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8451F9C07E853485C45F4F99 /* CoreBluetooth.framework */; };
 		5863C0BC2A92CD99DDF194B0 /* SwiftData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CE9717028B011FFC9077618 /* SwiftData.framework */; };
 		60F2A5ED16BD700076B0137A /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */; };
@@ -61,6 +62,7 @@
 		AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TacNetTests.swift; sourceTree = "<group>"; };
 		B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CactusFunctionProbe.swift; sourceTree = "<group>"; };
 		BC80363B64F4B07E7F424CCD /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		C5E9431F9B30497E8EDB9430 /* DataModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataModels.swift; sourceTree = "<group>"; };
 		CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FrameworkImportsProbe.swift; sourceTree = "<group>"; };
 		DCC08F62BEAD6B96F2F1A649 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -165,6 +167,7 @@
 		86BCBDC367E58B2053A70B92 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				C5E9431F9B30497E8EDB9430 /* DataModels.swift */,
 			);
 			name = Models;
 			path = Models;
@@ -312,6 +315,7 @@
 				6CDA0F05E8151523EE2CE29F /* Cactus.swift in Sources */,
 				C15F1E37C9232822B5AD9CB0 /* FrameworkImportsProbe.swift in Sources */,
 				1DCCC616FCABDDA833533698 /* CactusFunctionProbe.swift in Sources */,
+				22811F4EAE3A4C3BA68A7A21 /* DataModels.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
