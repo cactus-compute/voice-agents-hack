@@ -1,0 +1,12 @@
+[package]
+name = "masker-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "masker_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "masker-core-demo"
+path = "src/main.rs"

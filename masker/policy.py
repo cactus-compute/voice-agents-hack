@@ -1,6 +1,6 @@
 """Policy engine. CODEX OWNS THIS FILE.
 
-Maps a DetectionResult to a PolicyDecision (route + policy + reasons).
+Maps a DetectionResult to a PolicyDecision (route + policy + rationale).
 Ships a HIPAA-first baseline so the pipeline runs end-to-end. Codex can
 swap in a richer policy DSL — keep the signature stable.
 
@@ -13,36 +13,6 @@ from __future__ import annotations
 from .contracts import DetectionResult, EntityType, PolicyDecision, PolicyName
 
 _HIGH_RISK_LOCAL_ONLY: set[EntityType] = {EntityType.SSN, EntityType.MRN}
-_MASKED_SEND_TYPES: set[EntityType] = {
-    EntityType.EMAIL,
-    EntityType.PHONE,
-    EntityType.NAME,
-    EntityType.ADDRESS,
-    EntityType.DOB,
-    EntityType.INSURANCE_ID,
-}
-
-
-def _normalize_policy_name(policy_name: str) -> PolicyName:
-    if policy_name == "hipaa_logging":
-        return "hipaa_logging_strict"
-    if policy_name == "hipaa_clinical":
-        return "hipaa_clinical_context"
-    return policy_name  # type: ignore[return-value]
-
-
-def _decision(
-    *,
-    route: str,
-    policy: PolicyName,
-    reasons: list[str],
-) -> PolicyDecision:
-    return PolicyDecision(
-        route=route,  # type: ignore[arg-type]
-        policy=policy,
-        reasons=reasons,
-        rationale=", ".join(reasons) if reasons else "no_sensitive_content_detected",
-    )
 
 
 def decide(
@@ -57,64 +27,47 @@ def decide(
       - masked-send: forward to LLM with sensitive spans replaced
       - safe-to-send: forward verbatim (no PHI/PII detected)
     """
-    policy_name = _normalize_policy_name(policy_name)
     types = {e.type for e in detection.entities}
-    sensitive_types = {etype for etype in types if etype != EntityType.HEALTH_CONTEXT}
-    reasons: list[str] = []
 
-    if detection.health_context:
-        reasons.append("health_context_detected")
-    if sensitive_types:
-        reasons.append("contains_identifier")
-    if types & _HIGH_RISK_LOCAL_ONLY:
-        reasons.append("high_risk_identifier")
-    if types & {EntityType.INSURANCE_ID, EntityType.DOB, EntityType.ADDRESS}:
-        reasons.append("patient_record_linkable")
-
-    if policy_name == "hipaa_logging_strict":
-        if sensitive_types or detection.health_context:
-            return _decision(
+    if policy_name == "hipaa_logging":
+        if detection.has_sensitive:
+            return PolicyDecision(
                 route="masked-send",
                 policy=policy_name,
-                reasons=reasons or ["strict_logging_redaction"],
+                rationale="Strict logging policy: any sensitive data must be masked before traversal.",
             )
 
-    if policy_name == "hipaa_clinical_context":
+    if policy_name == "hipaa_clinical":
         if types & _HIGH_RISK_LOCAL_ONLY:
-            return _decision(
+            return PolicyDecision(
                 route="local-only",
                 policy=policy_name,
-                reasons=reasons,
+                rationale="Direct identifiers (SSN/MRN) must stay on-device under clinical policy.",
             )
-        if detection.health_context and sensitive_types:
-            return _decision(
-                route="local-only",
-                policy=policy_name,
-                reasons=reasons + ["clinical_context_requires_local_review"],
-            )
-        if detection.health_context:
-            return _decision(
+        if EntityType.HEALTH_CONTEXT in types and detection.entities:
+            return PolicyDecision(
                 route="masked-send",
                 policy=policy_name,
-                reasons=reasons or ["clinical_context_detected"],
+                rationale="Clinical context with identifiers → mask identifiers, keep medical context.",
             )
 
     if types & _HIGH_RISK_LOCAL_ONLY:
-        return _decision(
+        return PolicyDecision(
             route="local-only",
             policy=policy_name,
-            reasons=reasons,
+            rationale=f"High-risk identifiers detected: {sorted(t.value for t in types & _HIGH_RISK_LOCAL_ONLY)}",
         )
 
-    if sensitive_types & _MASKED_SEND_TYPES:
-        return _decision(
+    if detection.has_sensitive:
+        sensitive = sorted({e.type.value for e in detection.entities if e.type != EntityType.HEALTH_CONTEXT})
+        return PolicyDecision(
             route="masked-send",
             policy=policy_name,
-            reasons=reasons,
+            rationale=f"Sensitive entities present: {sensitive}",
         )
 
-    return _decision(
+    return PolicyDecision(
         route="safe-to-send",
         policy=policy_name,
-        reasons=["no_sensitive_content_detected"],
+        rationale="No sensitive entities detected.",
     )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
-from .contracts import DetectionResult, EntityType, MaskedText
+from .contracts import DetectionResult, MaskedText
 
 MaskMode = Literal["placeholder", "token"]
 
@@ -37,41 +37,23 @@ def mask(
     to the same redacted entity multiple times.
     """
     spans = sorted(
-        [
-            e
-            for e in detection.entities
-            if e.start >= 0 and e.end > e.start and e.type != EntityType.HEALTH_CONTEXT
-        ],
+        [e for e in detection.entities if e.start >= 0 and e.end > e.start],
         key=lambda e: e.start,
         reverse=True,
     )
 
     out = text
     token_map: dict[str, str] = {}
-    replacements: list[dict[str, str | int]] = []
-    occupied: list[tuple[int, int]] = []
     for e in spans:
-        if any(not (e.end <= start or e.start >= end) for start, end in occupied):
-            continue
         if mode == "token":
             replacement = _token_for(e.value)
             token_map[replacement] = e.value
         else:
-            replacement = "[MASKED]"
+            replacement = f"[MASKED:{e.type.value}]"
+            token_map[replacement] = e.value
         out = out[: e.start] + replacement + out[e.end :]
-        replacements.append(
-            {
-                "type": e.type.value,
-                "original": e.value,
-                "replacement": replacement,
-                "start": e.start,
-                "end": e.end,
-            }
-        )
-        occupied.append((e.start, e.end))
 
-    replacements.reverse()
-    return MaskedText(text=out, token_map=token_map, replacements=replacements)
+    return MaskedText(text=out, token_map=token_map)
 
 
 def unmask(text: str, masked: MaskedText) -> str:
@@ -93,5 +75,5 @@ def scrub_output(text: str, detection: DetectionResult) -> str:
     for e in detection.entities:
         if not e.value:
             continue
-        out = out.replace(e.value, "[MASKED]")
+        out = out.replace(e.value, f"[MASKED:{e.type.value}]")
     return out

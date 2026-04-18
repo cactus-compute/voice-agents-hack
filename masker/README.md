@@ -22,19 +22,11 @@ today; Codex replaces those bodies without touching this package's surface.
 ## Public API (3 calls + a class)
 
 ```python
-from masker import analyze_transcript, filter_input, filter_output, auto_attach, default_loop
+from masker import filter_input, filter_output, auto_attach, default_loop
 
 # 1. Drop-in helpers — what other hackathon teams will call:
 safe_prompt, meta = filter_input("My SSN is 123-45-6789.")
 safe_response     = filter_output(model_reply)
-
-# 1b. Single-call privacy pipeline for integrations and the trace UI:
-privacy = analyze_transcript(
-    "My doctor said I have chest pain and my insurance ID is BCBS-887421.",
-    policy_name="hipaa_clinical_context",
-)
-print(privacy.policy.route)   # 'local-only'
-print(privacy.masked.text)    # '... insurance ID is [MASKED].'
 
 # 2. Auto-attach to google-genai so existing Gemini code is masked transparently:
 auto_attach()  # then the team's existing client.models.generate_content(...) is filtered
@@ -86,7 +78,7 @@ shapes in `AGENTS.md`:
 
 ```python
 DetectionResult(entities=[...], risk_level="high")
-PolicyDecision(route="masked-send", policy="hipaa_base", reasons=["contains_identifier"], rationale="...")
+PolicyDecision(route="masked-send", policy="hipaa_base", rationale="...")
 TraceEvent(stage="masking", message="Masked SSN", elapsed_ms=1.2, payload={...})
 TurnResult(...)  # the full per-turn artifact returned by VoiceLoop
 ```

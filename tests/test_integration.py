@@ -8,7 +8,6 @@ from __future__ import annotations
 import unittest
 
 from masker import (
-    analyze_transcript,
     StubBackend,
     Tracer,
     VoiceLoop,
@@ -33,20 +32,12 @@ class DetectionTests(unittest.TestCase):
         det = detect("What's the weather tomorrow?")
         self.assertEqual(det.risk_level, "none")
         self.assertEqual(det.entities, [])
-        self.assertFalse(det.health_context)
 
     def test_email_and_phone_are_detected(self):
         det = detect("Email me at jane@example.com or 415-555-0123.")
         types = {e.type.value for e in det.entities}
         self.assertIn("email", types)
         self.assertIn("phone", types)
-
-    def test_healthcare_context_sets_flag_and_identifier(self):
-        det = detect("My doctor said I have chest pain and my insurance ID is BCBS-778812.")
-        self.assertTrue(det.health_context)
-        types = {e.type.value for e in det.entities}
-        self.assertIn("health_context", types)
-        self.assertIn("insurance_id", types)
 
 
 class PolicyTests(unittest.TestCase):
@@ -62,12 +53,6 @@ class PolicyTests(unittest.TestCase):
         det = detect("Ping priya@redwood.com.")
         self.assertEqual(decide(det).route, "masked-send")
 
-    def test_healthcare_identifier_is_local_only_for_clinical_context(self):
-        det = detect("My doctor said I have chest pain and my insurance ID is BCBS-887421.")
-        decision = decide(det, policy_name="hipaa_clinical_context")
-        self.assertEqual(decision.route, "local-only")
-        self.assertIn("clinical_context_requires_local_review", decision.reasons)
-
 
 class MaskingTests(unittest.TestCase):
     def test_mask_replaces_spans_with_placeholders(self):
@@ -75,9 +60,7 @@ class MaskingTests(unittest.TestCase):
         det = detect(text)
         m = mask(text, det)
         self.assertNotIn("jane@example.com", m.text)
-        self.assertIn("[MASKED]", m.text)
-        self.assertEqual(m.token_map, {})
-        self.assertEqual(m.replacements[0]["type"], "email")
+        self.assertIn("[MASKED:email]", m.text)
 
     def test_scrub_output_re_masks_leaked_values(self):
         text = "Call 415-555-0123."
@@ -85,7 +68,6 @@ class MaskingTests(unittest.TestCase):
         leaked = "Sure, calling 415-555-0123 now."
         scrubbed = scrub_output(leaked, det)
         self.assertNotIn("415-555-0123", scrubbed)
-        self.assertIn("[MASKED]", scrubbed)
 
 
 class PublicApiTests(unittest.TestCase):
@@ -94,22 +76,10 @@ class PublicApiTests(unittest.TestCase):
         self.assertNotIn("123-45-6789", safe)
         self.assertEqual(meta["route"], "local-only")
         self.assertEqual(meta["risk_level"], "high")
-        self.assertIn("high_risk_identifier", meta["reasons"])
-        self.assertIn("timings", meta)
 
     def test_filter_output_scrubs_leaked_email(self):
         out = filter_output("Reach me at jane@example.com")
         self.assertNotIn("jane@example.com", out)
-
-    def test_analyze_transcript_returns_detection_decision_masked_and_timings(self):
-        result = analyze_transcript(
-            "My doctor said I have chest pain and my insurance ID is BCBS-887421.",
-            policy_name="hipaa_clinical_context",
-        )
-        self.assertEqual(result.policy.route, "local-only")
-        self.assertTrue(result.detection.health_context)
-        self.assertIn("[MASKED]", result.masked.text)
-        self.assertGreaterEqual(result.timings.to_dict()["total_ms"], 0.0)
 
 
 class CactusOutputParserTests(unittest.TestCase):

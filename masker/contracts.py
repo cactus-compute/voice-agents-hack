@@ -25,11 +25,7 @@ class EntityType(str, Enum):
 
 RiskLevel = Literal["none", "low", "medium", "high"]
 Route = Literal["local-only", "masked-send", "safe-to-send"]
-PolicyName = Literal[
-    "hipaa_base",
-    "hipaa_logging_strict",
-    "hipaa_clinical_context",
-]
+PolicyName = Literal["hipaa_base", "hipaa_logging", "hipaa_clinical"]
 
 
 @dataclass(frozen=True)
@@ -41,7 +37,6 @@ class Entity:
     start: int = -1
     end: int = -1
     confidence: float = 1.0
-    health_context: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,7 +45,6 @@ class Entity:
             "start": self.start,
             "end": self.end,
             "confidence": self.confidence,
-            "health_context": self.health_context,
         }
 
 
@@ -63,13 +57,11 @@ class DetectionResult:
 
     entities: list[Entity]
     risk_level: RiskLevel
-    health_context: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "entities": [e.to_dict() for e in self.entities],
             "risk_level": self.risk_level,
-            "health_context": self.health_context,
         }
 
     @property
@@ -86,16 +78,10 @@ class PolicyDecision:
 
     route: Route
     policy: PolicyName
-    reasons: list[str] = field(default_factory=list)
     rationale: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "route": self.route,
-            "policy": self.policy,
-            "reasons": list(self.reasons),
-            "rationale": self.rationale,
-        }
+        return {"route": self.route, "policy": self.policy, "rationale": self.rationale}
 
 
 @dataclass(frozen=True)
@@ -106,14 +92,9 @@ class MaskedText:
 
     text: str
     token_map: dict[str, str] = field(default_factory=dict)
-    replacements: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "text": self.text,
-            "token_map": dict(self.token_map),
-            "replacements": list(self.replacements),
-        }
+        return {"text": self.text, "token_map": dict(self.token_map)}
 
 
 TraceStage = Literal[

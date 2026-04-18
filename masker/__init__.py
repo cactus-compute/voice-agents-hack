@@ -33,7 +33,6 @@ from .gemma_wrapper import (
     auto_attach,
     default_backend,
 )
-from .privacy import PrivacyPipelineResult, PrivacyTimings, analyze_transcript
 from .router import Router, default_router
 from .trace import Tracer
 from .voice_loop import VoiceLoop, default_loop
@@ -44,21 +43,20 @@ def filter_input(text: str, *, policy_name: PolicyName = "hipaa_base") -> tuple[
     version plus a metadata dict (route, entities, token_map). The most
     common integration point for other teams.
     """
-    result = analyze_transcript(text, policy_name=policy_name)
-    det = result.detection
-    decision = result.policy
-    masked = result.masked
+    from . import detection as _detection
+    from . import masking as _masking
+    from . import policy as _policy
+
+    det = _detection.detect(text)
+    decision = _policy.decide(det, policy_name=policy_name)
+    masked = _masking.mask(text, det)
     return masked.text, {
         "route": decision.route,
         "policy": decision.policy,
-        "reasons": list(decision.reasons),
         "rationale": decision.rationale,
         "entities": [e.to_dict() for e in det.entities],
         "risk_level": det.risk_level,
-        "health_context": det.health_context,
         "token_map": masked.token_map,
-        "replacements": masked.replacements,
-        "timings": result.timings.to_dict(),
     }
 
 
@@ -84,8 +82,6 @@ __all__ = [
     "MaskedText",
     "PolicyDecision",
     "PolicyName",
-    "PrivacyPipelineResult",
-    "PrivacyTimings",
     "Route",
     "Router",
     "StubBackend",
@@ -94,7 +90,6 @@ __all__ = [
     "TurnResult",
     "VoiceLoop",
     "auto_attach",
-    "analyze_transcript",
     "default_backend",
     "default_loop",
     "default_router",
