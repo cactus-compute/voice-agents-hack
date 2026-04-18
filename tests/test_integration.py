@@ -5,9 +5,13 @@ Run: `python -m unittest discover -s tests -v`
 
 from __future__ import annotations
 
+import io
+import json
 import unittest
+from unittest import mock
 
 from masker import (
+    CactusCloudBackend,
     StubBackend,
     Tracer,
     VoiceLoop,
@@ -15,7 +19,7 @@ from masker import (
     filter_output,
 )
 from masker.detection import detect
-from masker.gemma_wrapper import _extract_assistant_reply
+from masker.gemma_wrapper import _extract_assistant_reply, default_backend
 from masker.masking import mask, scrub_output
 from masker.policy import decide
 from masker.router import Router
@@ -113,6 +117,65 @@ You:
     def test_falls_back_when_marker_missing(self):
         reply = _extract_assistant_reply("hello world\n[done]")
         self.assertIn("hello world", reply)
+
+
+class CactusCloudBackendTests(unittest.TestCase):
+    """Mock the HTTP layer so the suite still runs offline / on CI."""
+
+    def _fake_response(self, body: dict) -> mock.MagicMock:
+        ctx = mock.MagicMock()
+        resp = mock.MagicMock()
+        resp.read.return_value = json.dumps(body).encode("utf-8")
+        ctx.__enter__.return_value = resp
+        ctx.__exit__.return_value = False
+        return ctx
+
+    def test_missing_key_raises(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            backend = CactusCloudBackend()
+            with self.assertRaisesRegex(RuntimeError, "CACTUS_CLOUD_KEY"):
+                backend.generate("hi")
+
+    def test_posts_text_payload_and_returns_text_field(self):
+        captured: dict = {}
+
+        def fake_urlopen(req, timeout, context):  # noqa: ARG001
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return self._fake_response({"text": "PONG", "model": "gemini-2.5-flash"})
+
+        with mock.patch.dict("os.environ", {"CACTUS_CLOUD_KEY": "k_test"}, clear=True):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                reply = CactusCloudBackend().generate("ping")
+
+        self.assertEqual(reply, "PONG")
+        self.assertEqual(captured["body"], {"text": "ping", "model": "gemini-2.5-flash"})
+        self.assertEqual(captured["headers"]["x-api-key"], "k_test")
+        self.assertIn("/api/v1/text", captured["url"])
+
+    def test_http_error_is_returned_as_masker_message(self):
+        import urllib.error
+
+        def fake_urlopen(req, timeout, context):  # noqa: ARG001
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "Unauthorized", hdrs=None,
+                fp=io.BytesIO(b'{"error":"bad key"}'),
+            )
+
+        with mock.patch.dict("os.environ", {"CACTUS_CLOUD_KEY": "k_test"}, clear=True):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                reply = CactusCloudBackend().generate("ping")
+
+        self.assertIn("cactus-cloud HTTP 401", reply)
+        self.assertIn("bad key", reply)
+
+    def test_default_backend_picks_cactus_cloud_when_key_set(self):
+        with mock.patch("masker.gemma_wrapper.shutil.which", return_value=None):
+            with mock.patch.dict(
+                "os.environ", {"CACTUS_CLOUD_KEY": "k_test"}, clear=True
+            ):
+                self.assertEqual(default_backend().name, "cactus-cloud")
 
 
 class VoiceLoopTests(unittest.TestCase):

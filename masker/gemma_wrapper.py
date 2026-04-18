@@ -1,9 +1,10 @@
 """Gemma backend wrappers. CURSOR OWNS THIS FILE.
 
-Three backends, all behind the same `GemmaBackend` protocol:
+Four backends, all behind the same `GemmaBackend` protocol:
 
   - LocalCactusBackend   → spawns `cactus run <model>` and pipes prompts in
-  - GeminiCloudBackend   → calls Gemini API via google-genai (cloud fallback)
+  - CactusCloudBackend   → POSTs to Cactus Cloud /text (HTTP, X-API-Key)
+  - GeminiCloudBackend   → calls Gemini API via google-genai (direct cloud)
   - StubBackend          → deterministic echo, used in CI / when no model present
 
 `auto_attach()` monkey-patches `google.genai.Client.models.generate_content`
@@ -12,10 +13,14 @@ so any team using the Gemini SDK gets Masker filtering for free.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import ssl
 import subprocess
-from dataclasses import dataclass
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 
@@ -79,6 +84,76 @@ class LocalCactusBackend:
         if proc.returncode != 0:
             return f"[masker] cactus run failed: {proc.stderr[:200].strip()}"
         return _extract_assistant_reply(proc.stdout)
+
+
+@dataclass
+class CactusCloudBackend:
+    """Cloud handoff via Cactus Cloud's `/text` endpoint.
+
+    Used when the local cactus CLI isn't available but the policy still says
+    `safe-to-send` (or `masked-send` after detection has rewritten the
+    prompt). This is the same hosted endpoint that `cactus run` falls back
+    to when CACTUS_CLOUD_KEY is set, just reached over plain HTTPS so we
+    don't need the cactus binary on PATH.
+
+    Schema (confirmed against api/v1/text):
+        POST  https://<host>/api/v1/text
+        Hdr   X-API-Key: <key>
+        Body  {"text": "...", "model": "gemini-2.5-flash"}
+        Resp  {"text": "...", "duration_ms": 0, "model": "...", ...}
+
+    The default endpoint matches the IP literal hardcoded in
+    cactus/cactus/ffi/cactus_cloud.cpp (self-signed cert → SSL verify off
+    by default, override with CACTUS_CLOUD_STRICT_SSL=1).
+    """
+
+    model: str = "gemini-2.5-flash"
+    api_key_env: str = "CACTUS_CLOUD_KEY"
+    endpoint: str = field(
+        default_factory=lambda: os.environ.get(
+            "CACTUS_CLOUD_ENDPOINT", "https://104.198.76.3/api/v1/text"
+        )
+    )
+    timeout_s: float = 30.0
+    name: str = "cactus-cloud"
+
+    def generate(self, prompt: str, *, max_tokens: int = 256) -> str:
+        api_key = os.environ.get(self.api_key_env) or os.environ.get(
+            "CACTUS_CLOUD_API_KEY"
+        )
+        if not api_key:
+            raise RuntimeError(
+                f"{self.api_key_env} not set. Export your Cactus Cloud key "
+                "(see .env.example) or pick a different backend."
+            )
+        payload = json.dumps({"text": prompt, "model": self.model}).encode("utf-8")
+        req = urllib.request.Request(
+            self.endpoint,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": api_key,
+            },
+        )
+        ctx: ssl.SSLContext | None = None
+        if not os.environ.get("CACTUS_CLOUD_STRICT_SSL"):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s, context=ctx) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            return f"[masker] cactus-cloud HTTP {exc.code}: {detail}"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            return f"[masker] cactus-cloud unreachable: {exc}"
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return body.strip()
+        return str(data.get("text", "")).strip() or body.strip()
 
 
 @dataclass
@@ -146,10 +221,20 @@ def _extract_assistant_reply(stdout: str) -> str:
 def default_backend() -> GemmaBackend:
     """Pick the best available backend based on environment.
 
-    Priority: cactus CLI on PATH > GEMINI_API_KEY set > stub.
+    Priority:
+      1. cactus CLI on PATH                        → LocalCactusBackend
+      2. CACTUS_CLOUD_KEY (or _API_KEY) exported   → CactusCloudBackend
+      3. GEMINI_API_KEY exported                   → GeminiCloudBackend
+      4. fallback                                  → StubBackend
+
+    Cactus Cloud is preferred over direct Gemini because it's the same
+    hosted endpoint the cactus binary uses, so the demo behaves the same
+    way on a laptop with the binary as it does on one without.
     """
     if shutil.which("cactus"):
         return LocalCactusBackend()
+    if os.environ.get("CACTUS_CLOUD_KEY") or os.environ.get("CACTUS_CLOUD_API_KEY"):
+        return CactusCloudBackend()
     if os.environ.get("GEMINI_API_KEY"):
         return GeminiCloudBackend()
     return StubBackend()

@@ -26,6 +26,7 @@ from .contracts import (
     TurnResult,
 )
 from .gemma_wrapper import (
+    CactusCloudBackend,
     GemmaBackend,
     GeminiCloudBackend,
     LocalCactusBackend,
@@ -73,6 +74,7 @@ def filter_output(text: str) -> str:
 
 
 __all__ = [
+    "CactusCloudBackend",
     "DetectionResult",
     "Entity",
     "EntityType",

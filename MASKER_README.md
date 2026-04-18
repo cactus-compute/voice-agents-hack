@@ -238,6 +238,38 @@ App → Masker (local) → Gemma
 
 ---
 
+## 🔌 Gemma Backends
+
+`masker.gemma_wrapper` ships four backends behind one `GemmaBackend`
+protocol. `default_backend()` picks in this order:
+
+| Priority | Backend                | Trigger                                    | Use it for                            |
+|---------:|------------------------|--------------------------------------------|---------------------------------------|
+| 1        | `LocalCactusBackend`   | `cactus` CLI on `PATH`                     | True on-device demo (laptop + GPU)    |
+| 2        | `CactusCloudBackend`   | `CACTUS_CLOUD_KEY` env var set             | Cloud handoff w/o the cactus binary   |
+| 3        | `GeminiCloudBackend`   | `GEMINI_API_KEY` env var set               | Direct Google API (no Cactus hop)     |
+| 4        | `StubBackend`          | nothing else available                     | CI / offline / unit tests             |
+
+### Cactus Cloud quick start
+
+```bash
+cp .env.example .env
+# edit .env, paste your cactus_live_… key into CACTUS_CLOUD_KEY
+set -a; source .env; set +a
+
+python -c "from masker.gemma_wrapper import default_backend; \
+           print(default_backend().generate('Reply with PONG.'))"
+# → PONG
+```
+
+`CactusCloudBackend` POSTs to the same `/api/v1/text` endpoint the
+`cactus` binary falls back to — uses stdlib `urllib`, no extra deps.
+SSL verification is off by default (matches the C++ FFI; the hosted
+endpoint uses a self-signed cert); set `CACTUS_CLOUD_STRICT_SSL=1` to
+flip it on, or override the host with `CACTUS_CLOUD_ENDPOINT`.
+
+---
+
 ## 🎬 Demo
 
 ### Demo 1 — Cactus + Gemma Healthcare Agent
