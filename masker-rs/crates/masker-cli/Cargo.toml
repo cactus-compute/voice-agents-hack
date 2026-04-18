@@ -1,0 +1,24 @@
+[package]
+name = "masker-cli"
+description = "Demo CLI for the masker library — runs the BACKLOG scenarios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "masker"
+path = "src/main.rs"
+
+[features]
+default = []
+gemini = ["masker/gemini"]
+cactus = ["masker/cactus"]
+
+[dependencies]
+masker = { path = "../masker" }
+clap = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
