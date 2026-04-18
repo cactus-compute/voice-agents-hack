@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -13,14 +13,15 @@
 		5863C0BC2A92CD99DDF194B0 /* SwiftData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CE9717028B011FFC9077618 /* SwiftData.framework */; };
 		60F2A5ED16BD700076B0137A /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */; };
 		6CDA0F05E8151523EE2CE29F /* Cactus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 942FCEBF9EBF2DBA591798EC /* Cactus.swift */; };
-		A1B2C3D4E5F60718293A4B5C /* BluetoothMeshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */; };
 		72FB70D9CC71AE84C1FAC19B /* TacNetApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 477E1CE86B91D0FB9556A590 /* TacNetApp.swift */; };
 		755B2109433A1DE815E1A11F /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CB01F5E99AEAA1D250F4F26 /* AVFoundation.framework */; };
 		8325E27D29419CA6CD6908C5 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80024568731CDCB04A01CE89 /* CoreLocation.framework */; };
+		A1B2C3D4E5F60718293A4B5C /* BluetoothMeshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */; };
 		A33F68E2F2BA987E1B5E21C3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC80363B64F4B07E7F424CCD /* Foundation.framework */; };
 		B3EDC1A65C8C85021FFD98C7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC80363B64F4B07E7F424CCD /* Foundation.framework */; };
 		C15F1E37C9232822B5AD9CB0 /* FrameworkImportsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */; };
 		CC3B531DE3DD2D794CC8CCDE /* TacNetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */; };
+		D24C38D42F927CB700DC5610 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = D24C38D32F927CB700DC5610 /* ZIPFoundation */; };
 		DCDED2D71C5E58146B3EF85E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 665084993F5AD346766676E3 /* ContentView.swift */; };
 		E860E4FE8175156FBDA6ADB3 /* cactus-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -56,16 +57,16 @@
 		4CE9717028B011FFC9077618 /* SwiftData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftData.framework; path = System/Library/Frameworks/SwiftData.framework; sourceTree = "<group>"; };
 		665084993F5AD346766676E3 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		80024568731CDCB04A01CE89 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = "<group>"; };
-		840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; path = "cactus-ios.xcframework"; sourceTree = "<group>"; };
+		840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; path = "cactus-ios.xcframework"; sourceTree = "<group>"; };
 		8451F9C07E853485C45F4F99 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = "<group>"; };
 		8CB01F5E99AEAA1D250F4F26 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = "<group>"; };
 		942FCEBF9EBF2DBA591798EC /* Cactus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Cactus.swift; sourceTree = "<group>"; };
-		D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BluetoothMeshService.swift; sourceTree = "<group>"; };
 		AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TacNetTests.swift; sourceTree = "<group>"; };
 		B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CactusFunctionProbe.swift; sourceTree = "<group>"; };
 		BC80363B64F4B07E7F424CCD /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		C5E9431F9B30497E8EDB9430 /* DataModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataModels.swift; sourceTree = "<group>"; };
 		CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FrameworkImportsProbe.swift; sourceTree = "<group>"; };
+		D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BluetoothMeshService.swift; sourceTree = "<group>"; };
 		DCC08F62BEAD6B96F2F1A649 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -88,6 +89,7 @@
 				8325E27D29419CA6CD6908C5 /* CoreLocation.framework in Frameworks */,
 				5863C0BC2A92CD99DDF194B0 /* SwiftData.framework in Frameworks */,
 				60F2A5ED16BD700076B0137A /* cactus-ios.xcframework in Frameworks */,
+				D24C38D42F927CB700DC5610 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -108,7 +110,6 @@
 			children = (
 				DCC08F62BEAD6B96F2F1A649 /* Info.plist */,
 			);
-			name = Resources;
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -129,7 +130,6 @@
 				CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */,
 				B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */,
 			);
-			name = Utilities;
 			path = Utilities;
 			sourceTree = "<group>";
 		};
@@ -138,7 +138,6 @@
 			children = (
 				665084993F5AD346766676E3 /* ContentView.swift */,
 			);
-			name = Views;
 			path = Views;
 			sourceTree = "<group>";
 		};
@@ -148,7 +147,6 @@
 				942FCEBF9EBF2DBA591798EC /* Cactus.swift */,
 				D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */,
 			);
-			name = Services;
 			path = Services;
 			sourceTree = "<group>";
 		};
@@ -163,7 +161,6 @@
 				1AAA812917449A8F3B4F1DAF /* Resources */,
 				477E1CE86B91D0FB9556A590 /* TacNetApp.swift */,
 			);
-			name = TacNet;
 			path = TacNet;
 			sourceTree = "<group>";
 		};
@@ -172,7 +169,6 @@
 			children = (
 				C5E9431F9B30497E8EDB9430 /* DataModels.swift */,
 			);
-			name = Models;
 			path = Models;
 			sourceTree = "<group>";
 		};
@@ -181,7 +177,6 @@
 			children = (
 				AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */,
 			);
-			name = TacNetTests;
 			path = TacNetTests;
 			sourceTree = "<group>";
 		};
@@ -189,7 +184,6 @@
 			isa = PBXGroup;
 			children = (
 			);
-			name = ViewModels;
 			path = ViewModels;
 			sourceTree = "<group>";
 		};
@@ -198,7 +192,6 @@
 			children = (
 				840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */,
 			);
-			name = Frameworks;
 			path = Frameworks;
 			sourceTree = "<group>";
 		};
@@ -279,8 +272,9 @@
 				Base,
 			);
 			mainGroup = 36018B067800C561E8C4E6F3;
-			minimizedProjectReferenceProxies = 0;
-			preferredProjectObjectVersion = 77;
+			packageReferences = (
+				D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */,
+			);
 			productRefGroup = 02F396F777375CDA52C06045 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -349,11 +343,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TacNet/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -368,11 +366,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TacNet/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -504,7 +506,11 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/Frameworks @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/Frameworks",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appTests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -520,7 +526,11 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/Frameworks @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/Frameworks",
+					"@executable_path/Frameworks",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appTests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
@@ -561,6 +571,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZipFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D24C38D32F927CB700DC5610 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B103C177B26E6D3CEBF09C80 /* Project object */;
 }

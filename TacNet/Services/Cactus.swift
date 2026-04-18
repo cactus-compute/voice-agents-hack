@@ -1,4 +1,5 @@
 import Foundation
+import ZIPFoundation
 import cactus
 
 public typealias CactusModelT = UnsafeMutableRawPointer
@@ -703,10 +704,10 @@ public struct ModelDownloadConfiguration: Sendable {
     }
 
     public static let live = ModelDownloadConfiguration(
-        modelURL: URL(string: "https://huggingface.co/Cactus-Compute/gemma-4-e4b-int4/resolve/main/gemma-4-e4b-int4.bin")!,
-        expectedModelSizeBytes: 6_700_000_000,
-        modelDirectoryName: "gemma-4-e4b-int4",
-        modelFileName: "gemma-4-e4b-int4.bin"
+        modelURL: URL(string: "https://huggingface.co/Cactus-Compute/gemma-4-E4B-it/resolve/main/weights/gemma-4-e4b-it-int4-apple.zip")!,
+        expectedModelSizeBytes: 6_439_205_261,
+        modelDirectoryName: "gemma-4-e4b-it",
+        modelFileName: ".complete"
     )
 }
 
@@ -760,6 +761,7 @@ public enum URLSessionDownloadClientError: Error {
     case interrupted(resumeData: Data?)
     case missingTemporaryFile
     case transport(NSError)
+    case httpError(statusCode: Int)
 }
 
 public final class URLSessionDownloadClient: NSObject, URLSessionDownloading {
@@ -773,7 +775,11 @@ public final class URLSessionDownloadClient: NSObject, URLSessionDownloading {
     private var downloadedLocationsByTaskID: [Int: URL] = [:]
 
     private lazy var session: URLSession = {
-        URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 86400
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     public func download(
@@ -785,7 +791,9 @@ public final class URLSessionDownloadClient: NSObject, URLSessionDownloading {
             if let resumeData = request.resumeData, !resumeData.isEmpty {
                 task = session.downloadTask(withResumeData: resumeData)
             } else {
-                task = session.downloadTask(with: request.url)
+                var urlRequest = URLRequest(url: request.url)
+                urlRequest.setValue("1", forHTTPHeaderField: "X-HF-No-Xet")
+                task = session.downloadTask(with: urlRequest)
             }
 
             let bundle = CallbackBundle(
@@ -821,8 +829,22 @@ extension URLSessionDownloadClient: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        lock.withLock {
-            downloadedLocationsByTaskID[downloadTask.taskIdentifier] = location
+        // Apple deletes the temp file when this method returns,
+        // so move it to a stable location immediately.
+        let stableURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TacNet_download_\(downloadTask.taskIdentifier).tmp")
+        do {
+            if FileManager.default.fileExists(atPath: stableURL.path) {
+                try FileManager.default.removeItem(at: stableURL)
+            }
+            try FileManager.default.moveItem(at: location, to: stableURL)
+            lock.withLock {
+                downloadedLocationsByTaskID[downloadTask.taskIdentifier] = stableURL
+            }
+        } catch {
+            lock.withLock {
+                downloadedLocationsByTaskID[downloadTask.taskIdentifier] = nil
+            }
         }
     }
 
@@ -856,6 +878,13 @@ extension URLSessionDownloadClient: URLSessionDownloadDelegate {
 
         guard let downloadedLocation else {
             callbackBundle.completion(.failure(URLSessionDownloadClientError.missingTemporaryFile))
+            return
+        }
+
+        if let httpResponse = task.response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            try? FileManager.default.removeItem(at: downloadedLocation)
+            callbackBundle.completion(.failure(URLSessionDownloadClientError.httpError(statusCode: httpResponse.statusCode)))
             return
         }
 
@@ -912,14 +941,35 @@ public actor ModelDownloadService {
         synchronizeCompletionState() ? modelDirectoryURL.path : nil
     }
 
+    private static let maxRetryAttempts = 5
+    private static let retryBaseDelay: UInt64 = 2_000_000_000 // 2 seconds in nanoseconds
+
     @discardableResult
     public func ensureModelAvailable(progressHandler: ProgressHandler? = nil) async throws -> URL {
         if synchronizeCompletionState() {
+            NSLog("[ModelDownload] Model already present at %@, skipping download", modelDirectoryURL.path)
+            progressHandler?(1.0)
+            return modelDirectoryURL
+        }
+
+        // Diagnostic: log what's currently in applicationSupportDirectory so we
+        // can confirm whether orphaned model files are present before migrating.
+        let appSupportContents = (try? fileManager.contentsOfDirectory(atPath: applicationSupportDirectory.path)) ?? []
+        let weightsInRoot = appSupportContents.filter { ($0 as NSString).pathExtension == "weights" }.count
+        NSLog("[ModelDownload] Diagnostic — app support root contains %d total items, %d .weights files", appSupportContents.count, weightsInRoot)
+
+        // Recovery: a previous extraction may have landed files directly in
+        // applicationSupportDirectory instead of modelDirectoryURL (wrong destination
+        // bug). If we find >500 .weights files there, migrate them in-place rather
+        // than re-downloading 6.4 GB.
+        if recoverMisplacedExtraction() {
+            NSLog("[ModelDownload] Recovery migration succeeded — skipping download")
             progressHandler?(1.0)
             return modelDirectoryURL
         }
 
         let availableStorage = try storageChecker.availableStorageBytes(for: applicationSupportDirectory)
+        NSLog("[ModelDownload] Storage check — available: %lld bytes, required: %lld bytes", availableStorage, configuration.expectedModelSizeBytes)
         guard availableStorage >= configuration.expectedModelSizeBytes else {
             throw ModelDownloadServiceError.insufficientStorage(
                 requiredBytes: configuration.expectedModelSizeBytes,
@@ -932,46 +982,125 @@ public actor ModelDownloadService {
         let progressReporter = ProgressReporter(progressHandler: progressHandler)
         progressReporter.report(0)
 
-        let request = ModelDownloadRequest(
-            url: configuration.modelURL,
-            resumeData: userDefaults.data(forKey: resumeDataKey)
-        )
+        var lastNonRecoverableError: ModelDownloadServiceError?
 
-        do {
-            let temporaryLocation = try await downloader.download(
-                request: request,
-                progress: { written, total in
-                    progressReporter.report(bytesWritten: written, totalBytes: total)
-                }
+        retryLoop: for attempt in 0..<Self.maxRetryAttempts {
+            if attempt > 0 {
+                let delay = Self.retryBaseDelay * UInt64(min(attempt, 4))
+                NSLog("[ModelDownload] Retry attempt %d, waiting %llu ns", attempt, delay)
+                try await Task.sleep(nanoseconds: delay)
+            }
+
+            NSLog("[ModelDownload] Attempt %d — starting download from %@", attempt, configuration.modelURL.absoluteString)
+
+            let request = ModelDownloadRequest(
+                url: configuration.modelURL,
+                resumeData: userDefaults.data(forKey: resumeDataKey)
             )
 
-            if fileManager.fileExists(atPath: modelFileURL.path) {
-                try fileManager.removeItem(at: modelFileURL)
-            }
-            try fileManager.moveItem(at: temporaryLocation, to: modelFileURL)
-
-            userDefaults.removeObject(forKey: resumeDataKey)
-            userDefaults.set(true, forKey: completionKey)
-
-            progressReporter.finish()
-            return modelDirectoryURL
-        } catch let error as URLSessionDownloadClientError {
-            switch error {
-            case let .interrupted(resumeData):
-                if let resumeData, !resumeData.isEmpty {
-                    userDefaults.set(resumeData, forKey: resumeDataKey)
-                }
-                throw ModelDownloadServiceError.interrupted(canResume: resumeData?.isEmpty == false)
-            case let .transport(transportError):
-                throw ModelDownloadServiceError.network(
-                    underlyingDescription: "\(transportError.domain)(\(transportError.code)): \(transportError.localizedDescription)"
+            do {
+                let temporaryLocation = try await downloader.download(
+                    request: request,
+                    progress: { written, total in
+                        progressReporter.report(bytesWritten: written, totalBytes: total)
+                    }
                 )
-            case .missingTemporaryFile:
-                throw ModelDownloadServiceError.network(underlyingDescription: "Download completed without a temporary file.")
+
+                NSLog("[ModelDownload] Download finished — temporary file at %@", temporaryLocation.path)
+
+                // Validate the zip size before doing anything else.
+                let zipAttributes = try fileManager.attributesOfItem(atPath: temporaryLocation.path)
+                let zipSize = (zipAttributes[.size] as? Int64) ?? 0
+                let minimumExpectedSize = configuration.expectedModelSizeBytes / 4
+                NSLog("[ModelDownload] Zip size: %lld bytes (minimum expected: %lld bytes)", zipSize, minimumExpectedSize)
+                guard zipSize >= minimumExpectedSize else {
+                    try? fileManager.removeItem(at: temporaryLocation)
+                    lastNonRecoverableError = .network(
+                        underlyingDescription: "Downloaded file is too small (\(zipSize) bytes). Expected ~\(configuration.expectedModelSizeBytes) bytes. The model URL may be inaccessible or require authentication."
+                    )
+                    break retryLoop
+                }
+
+                // Remove any previously partially-extracted model directory so
+                // the extraction always starts from a clean slate.
+                if fileManager.fileExists(atPath: modelDirectoryURL.path) {
+                    NSLog("[ModelDownload] Removing previous partial extraction at %@", modelDirectoryURL.path)
+                    try fileManager.removeItem(at: modelDirectoryURL)
+                }
+
+                NSLog("[ModelDownload] Extracting zip to %@", modelDirectoryURL.path)
+                // The zip contains 2088 .weights files at its root (no top-level
+                // subdirectory), so extract directly into modelDirectoryURL so
+                // all files land in the right place for cactusInit.
+                try fileManager.unzipItem(at: temporaryLocation, to: modelDirectoryURL)
+                try? fileManager.removeItem(at: temporaryLocation)
+                NSLog("[ModelDownload] Extraction complete")
+
+                let extractedCount = (try? fileManager.contentsOfDirectory(atPath: modelDirectoryURL.path))?.count ?? 0
+                NSLog("[ModelDownload] Extracted %d files into %@", extractedCount, modelDirectoryURL.path)
+
+                guard fileManager.fileExists(atPath: modelDirectoryURL.path) else {
+                    lastNonRecoverableError = .network(
+                        underlyingDescription: "Zip extraction completed but the model directory was not found at the expected path. The zip may have a different internal structure."
+                    )
+                    break retryLoop
+                }
+
+                // Write the sentinel so future launches can detect a complete download.
+                fileManager.createFile(atPath: modelFileURL.path, contents: nil, attributes: nil)
+                userDefaults.removeObject(forKey: resumeDataKey)
+                userDefaults.set(true, forKey: completionKey)
+                NSLog("[ModelDownload] Sentinel written at %@, download complete", modelFileURL.path)
+
+                progressReporter.finish()
+                return modelDirectoryURL
+            } catch let error as URLSessionDownloadClientError {
+                switch error {
+                case let .interrupted(resumeData):
+                    if let resumeData, !resumeData.isEmpty {
+                        userDefaults.set(resumeData, forKey: resumeDataKey)
+                    }
+                    // Auto-retry interrupted downloads
+                    continue
+                case let .transport(transportError):
+                    let isTransient = [
+                        NSURLErrorTimedOut,
+                        NSURLErrorNetworkConnectionLost,
+                        NSURLErrorNotConnectedToInternet,
+                        NSURLErrorCannotConnectToHost
+                    ].contains(transportError.code)
+                    if isTransient {
+                        continue
+                    }
+                    lastNonRecoverableError = .network(
+                        underlyingDescription: "\(transportError.domain)(\(transportError.code)): \(transportError.localizedDescription)"
+                    )
+                    break retryLoop
+                case let .httpError(statusCode):
+                    NSLog("[ModelDownload] HTTP error %d from server", statusCode)
+                    lastNonRecoverableError = .network(
+                        underlyingDescription: "Server returned HTTP \(statusCode). Check that the model URL is correct and publicly accessible."
+                    )
+                    break retryLoop
+                case .missingTemporaryFile:
+                    NSLog("[ModelDownload] Error: download completed but temp file was missing")
+                    lastNonRecoverableError = .network(underlyingDescription: "Download completed without a temporary file.")
+                    break retryLoop
+                }
+            } catch {
+                NSLog("[ModelDownload] Unexpected error on attempt %d: %@", attempt, error.localizedDescription)
+                lastNonRecoverableError = .network(underlyingDescription: error.localizedDescription)
+                break retryLoop
             }
-        } catch {
-            throw ModelDownloadServiceError.network(underlyingDescription: error.localizedDescription)
         }
+
+        if let lastNonRecoverableError {
+            NSLog("[ModelDownload] Giving up after all attempts — final error: %@", String(describing: lastNonRecoverableError))
+            throw lastNonRecoverableError
+        }
+
+        let hasResumeData = userDefaults.data(forKey: resumeDataKey)?.isEmpty == false
+        throw ModelDownloadServiceError.interrupted(canResume: hasResumeData)
     }
 
     private var modelDirectoryURL: URL {
@@ -982,17 +1111,62 @@ public actor ModelDownloadService {
         modelDirectoryURL.appendingPathComponent(configuration.modelFileName, isDirectory: false)
     }
 
-    private func synchronizeCompletionState() -> Bool {
-        let fileExists = fileManager.fileExists(atPath: modelFileURL.path)
-        let persisted = userDefaults.bool(forKey: completionKey)
-
-        if fileExists, !persisted {
-            userDefaults.set(true, forKey: completionKey)
-        } else if !fileExists, persisted {
-            userDefaults.set(false, forKey: completionKey)
+    /// Detects files extracted to the wrong location by a previous buggy run and
+    /// moves them into `modelDirectoryURL` without re-downloading. Returns `true`
+    /// if recovery succeeded and the model is ready to use.
+    @discardableResult
+    private func recoverMisplacedExtraction() -> Bool {
+        guard let contents = try? fileManager.contentsOfDirectory(atPath: applicationSupportDirectory.path) else {
+            return false
         }
 
-        return fileExists && userDefaults.bool(forKey: completionKey)
+        let modelExtensions: Set<String> = ["weights", "bias", "json", "txt", "jinja2", "mlpackage", "mlmodelc"]
+        let orphans = contents.filter { name in
+            modelExtensions.contains((name as NSString).pathExtension)
+        }
+
+        // Use .weights count as the fingerprint — the model has 2076 .weights files.
+        // >500 in app support root is unambiguously a misplaced extraction.
+        let weightsCount = orphans.filter { ($0 as NSString).pathExtension == "weights" }.count
+        guard weightsCount > 500 else { return false }
+
+        NSLog("[ModelDownload] Found %d orphaned model files in app support root — migrating (skips 6.4 GB re-download)", orphans.count)
+
+        do {
+            try fileManager.createDirectory(at: modelDirectoryURL, withIntermediateDirectories: true)
+            var moved = 0
+            for name in orphans {
+                let src = applicationSupportDirectory.appendingPathComponent(name)
+                let dst = modelDirectoryURL.appendingPathComponent(name)
+                guard !fileManager.fileExists(atPath: dst.path) else { continue }
+                try fileManager.moveItem(at: src, to: dst)
+                moved += 1
+            }
+            NSLog("[ModelDownload] Migrated %d files to %@", moved, modelDirectoryURL.path)
+            fileManager.createFile(atPath: modelFileURL.path, contents: nil, attributes: nil)
+            userDefaults.set(true, forKey: completionKey)
+            return true
+        } catch {
+            NSLog("[ModelDownload] Migration failed: %@", error.localizedDescription)
+            return false
+        }
+    }
+
+    private func synchronizeCompletionState() -> Bool {
+        // Both the sentinel file AND the model directory must be present.
+        // If either is missing the extraction was incomplete; clean up so
+        // this launch triggers a fresh download automatically — no reinstall needed.
+        guard fileManager.fileExists(atPath: modelFileURL.path),
+              fileManager.fileExists(atPath: modelDirectoryURL.path) else {
+            try? fileManager.removeItem(at: modelDirectoryURL)
+            try? fileManager.removeItem(at: modelFileURL)
+            userDefaults.set(false, forKey: completionKey)
+            userDefaults.removeObject(forKey: resumeDataKey)
+            return false
+        }
+
+        userDefaults.set(true, forKey: completionKey)
+        return true
     }
 }
 
