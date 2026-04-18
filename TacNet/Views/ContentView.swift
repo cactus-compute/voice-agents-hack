@@ -13,6 +13,7 @@ struct ContentView: View {
         case createNetwork
         case joinNetwork
         case roleSelection
+        case main
     }
 
     var body: some View {
@@ -66,10 +67,21 @@ struct ContentView: View {
             case .roleSelection:
                 RoleSelectionView(
                     roleClaimService: appNetworkCoordinator.roleClaimService,
-                    treeSyncService: appNetworkCoordinator.treeSyncService
+                    treeSyncService: appNetworkCoordinator.treeSyncService,
+                    onRoleClaimed: {
+                        onboardingRoute = .main
+                    }
                 ) {
                     onboardingRoute = .welcome
                 }
+
+            case .main:
+                MainView(
+                    viewModel: appNetworkCoordinator.mainViewModel,
+                    onBackToRoleSelection: {
+                        onboardingRoute = .roleSelection
+                    }
+                )
             }
         }
     }
@@ -656,6 +668,7 @@ private struct PinEntryView: View {
 private struct RoleSelectionView: View {
     @ObservedObject var roleClaimService: RoleClaimService
     @ObservedObject var treeSyncService: TreeSyncService
+    let onRoleClaimed: () -> Void
     let onBack: () -> Void
 
     @State private var statusMessage: String?
@@ -748,6 +761,7 @@ private struct RoleSelectionView: View {
         switch result {
         case .claimed(let claimedNodeID):
             statusMessage = "Claimed \(claimedNodeID)."
+            onRoleClaimed()
         case .rejected(let reason):
             statusMessage = rejectionMessage(for: reason)
         case .unavailable:
@@ -815,6 +829,474 @@ private struct RoleSelectionView: View {
     }
 }
 
+private struct MainView: View {
+    @ObservedObject var viewModel: MainViewModel
+    let onBackToRoleSelection: () -> Void
+
+    @State private var isPressingPTT = false
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let disconnectionMessage = viewModel.disconnectionMessage {
+                Label(disconnectionMessage, systemImage: "wifi.exclamationmark")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            if let errorMessage = viewModel.errorMessage, errorMessage != viewModel.disconnectionMessage {
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if viewModel.feedEntries.isEmpty {
+                        Text("No live entries yet. Incoming sibling broadcasts and compaction summaries will appear here.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        ForEach(viewModel.feedEntries) { entry in
+                            LiveFeedEntryRow(entry: entry)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+            }
+
+            pttControl
+                .padding(.bottom, 12)
+        }
+        .navigationTitle("Main Feed")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button("Roles", action: onBackToRoleSelection)
+            }
+        }
+        .onAppear {
+            viewModel.refreshConnectionState()
+        }
+    }
+
+    private var pttControl: some View {
+        ZStack {
+            Circle()
+                .fill(viewModel.pttButtonColor.opacity(0.20))
+                .overlay(
+                    Circle()
+                        .stroke(viewModel.pttButtonColor, lineWidth: 3)
+                )
+
+            VStack(spacing: 8) {
+                Image(systemName: viewModel.pttButtonSymbol)
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(viewModel.pttButtonColor)
+                Text(viewModel.pttButtonTitle)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+            }
+        }
+        .frame(width: 220, height: 220)
+        .opacity(viewModel.isPTTDisabled ? 0.55 : 1.0)
+        .contentShape(Circle())
+        .allowsHitTesting(!viewModel.isPTTDisabled || viewModel.pttState == .recording)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !isPressingPTT else {
+                        return
+                    }
+                    isPressingPTT = true
+                    Task {
+                        await viewModel.startPushToTalk()
+                    }
+                }
+                .onEnded { _ in
+                    guard isPressingPTT else {
+                        return
+                    }
+                    isPressingPTT = false
+                    Task {
+                        await viewModel.stopPushToTalk()
+                    }
+                }
+        )
+    }
+}
+
+private struct LiveFeedEntryRow: View {
+    let entry: MainViewModel.FeedEntry
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(entry.senderRole)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(Self.timestampFormatter.string(from: entry.timestamp))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text(entry.type.badgeTitle)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(entry.type.badgeForegroundColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(entry.type.badgeBackgroundColor)
+                    .clipShape(Capsule())
+                Spacer(minLength: 8)
+            }
+
+            Text(entry.text)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+@MainActor
+final class MainViewModel: ObservableObject {
+    enum PTTState: Equatable {
+        case idle
+        case recording
+        case sending
+    }
+
+    enum FeedEntryType: String, Equatable {
+        case broadcast = "BROADCAST"
+        case compaction = "COMPACTION"
+
+        var badgeTitle: String {
+            rawValue
+        }
+
+        var badgeForegroundColor: Color {
+            switch self {
+            case .broadcast:
+                return .blue
+            case .compaction:
+                return .orange
+            }
+        }
+
+        var badgeBackgroundColor: Color {
+            switch self {
+            case .broadcast:
+                return Color.blue.opacity(0.18)
+            case .compaction:
+                return Color.orange.opacity(0.18)
+            }
+        }
+    }
+
+    struct FeedEntry: Identifiable, Equatable {
+        let id: UUID
+        let senderRole: String
+        let timestamp: Date
+        let type: FeedEntryType
+        let text: String
+    }
+
+    static let disconnectedErrorText = "Disconnected from mesh. Reconnect to use push-to-talk."
+
+    @Published private(set) var feedEntries: [FeedEntry] = []
+    @Published private(set) var pttState: PTTState = .idle
+    @Published private(set) var isConnected: Bool
+    @Published private(set) var errorMessage: String?
+
+    private let meshService: BluetoothMeshService
+    private let roleClaimService: RoleClaimService
+    private let localDeviceID: String
+    private let messageRouter: MessageRouter
+    private let audioService: AudioService
+    private var seenMessageIDs: Set<UUID> = []
+
+    init(
+        meshService: BluetoothMeshService,
+        roleClaimService: RoleClaimService,
+        localDeviceID: String,
+        messageRouter: MessageRouter = MessageRouter(),
+        audioService: AudioService = AudioService()
+    ) {
+        self.meshService = meshService
+        self.roleClaimService = roleClaimService
+        self.localDeviceID = localDeviceID
+        self.messageRouter = messageRouter
+        self.audioService = audioService
+        isConnected = !meshService.connectedPeerIDs.isEmpty
+        if !isConnected {
+            errorMessage = Self.disconnectedErrorText
+        }
+    }
+
+    var isPTTDisabled: Bool {
+        !isConnected || pttState == .sending
+    }
+
+    var disconnectionMessage: String? {
+        isConnected ? nil : Self.disconnectedErrorText
+    }
+
+    var pttButtonTitle: String {
+        switch pttState {
+        case .idle:
+            return "Hold to Talk"
+        case .recording:
+            return "Recording…\nRelease to Send"
+        case .sending:
+            return "Sending…"
+        }
+    }
+
+    var pttButtonSymbol: String {
+        switch pttState {
+        case .idle:
+            return "mic.fill"
+        case .recording:
+            return "record.circle.fill"
+        case .sending:
+            return "paperplane.fill"
+        }
+    }
+
+    var pttButtonColor: Color {
+        if !isConnected {
+            return .gray
+        }
+        switch pttState {
+        case .idle:
+            return .blue
+        case .recording:
+            return .red
+        case .sending:
+            return .orange
+        }
+    }
+
+    func refreshConnectionState() {
+        let hasConnectedPeers = !meshService.connectedPeerIDs.isEmpty
+        isConnected = hasConnectedPeers
+        if hasConnectedPeers {
+            if errorMessage == Self.disconnectedErrorText {
+                errorMessage = nil
+            }
+        } else if pttState != .recording {
+            errorMessage = Self.disconnectedErrorText
+        }
+    }
+
+    func handlePeerConnectionStateChanged(peerID _: UUID, state _: PeerConnectionState) {
+        refreshConnectionState()
+    }
+
+    func handleIncomingMessage(_ message: Message) {
+        guard !seenMessageIDs.contains(message.id),
+              let context = localContext() else {
+            return
+        }
+
+        let entryType: FeedEntryType
+        let textValue: String
+
+        switch message.type {
+        case .broadcast:
+            guard shouldDisplaySiblingBroadcast(message, localNodeID: context.localNodeID, tree: context.config.tree),
+                  let transcript = message.payload.transcript?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !transcript.isEmpty else {
+                return
+            }
+            entryType = .broadcast
+            textValue = transcript
+
+        case .compaction:
+            guard messageRouter.shouldDisplay(message, for: context.localNodeID, in: context.config.tree),
+                  let summary = message.payload.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !summary.isEmpty else {
+                return
+            }
+            entryType = .compaction
+            textValue = summary
+
+        default:
+            return
+        }
+
+        seenMessageIDs.insert(message.id)
+        feedEntries.append(
+            FeedEntry(
+                id: message.id,
+                senderRole: message.senderRole,
+                timestamp: message.timestamp,
+                type: entryType,
+                text: textValue
+            )
+        )
+        feedEntries.sort { lhs, rhs in
+            lhs.timestamp > rhs.timestamp
+        }
+    }
+
+    func startPushToTalk() async {
+        guard pttState == .idle else {
+            return
+        }
+
+        guard isConnected else {
+            errorMessage = Self.disconnectedErrorText
+            return
+        }
+
+        guard localContext() != nil else {
+            errorMessage = "Claim a role before transmitting."
+            return
+        }
+
+        do {
+            try await audioService.pttPressed()
+            pttState = .recording
+            errorMessage = nil
+        } catch {
+            pttState = .idle
+            errorMessage = "Unable to start recording: \(error.localizedDescription)"
+        }
+    }
+
+    func stopPushToTalk() async {
+        guard pttState == .recording else {
+            return
+        }
+
+        pttState = .sending
+
+        do {
+            let queuedSequence = try await audioService.pttReleased()
+            guard let queuedSequence else {
+                pttState = .idle
+                return
+            }
+
+            await audioService.waitForIdle()
+            let history = await audioService.transcriptHistory
+            guard let transcript = history.first(where: { $0.sequence == queuedSequence })?.transcript,
+                  !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                pttState = .idle
+                return
+            }
+
+            publishLocalTranscript(transcript)
+            pttState = .idle
+        } catch {
+            pttState = .idle
+            errorMessage = "Unable to send message: \(error.localizedDescription)"
+        }
+    }
+
+    private func publishLocalTranscript(_ transcript: String) {
+        guard let context = localContext() else {
+            errorMessage = "Claim a role before transmitting."
+            return
+        }
+
+        let outboundMessage = messageRouter.makeBroadcastMessage(
+            transcript: transcript,
+            senderID: localDeviceID,
+            senderNodeID: context.localNodeID,
+            senderRole: context.senderRole,
+            in: context.config.tree
+        )
+        meshService.publish(outboundMessage)
+    }
+
+    private struct LocalContext {
+        let config: NetworkConfig
+        let localNodeID: String
+        let senderRole: String
+    }
+
+    private func localContext() -> LocalContext? {
+        guard let config = roleClaimService.networkConfig else {
+            return nil
+        }
+
+        let localNodeID = roleClaimService.activeClaimNodeID
+            ?? findNodeID(claimedBy: localDeviceID, in: config.tree)
+        guard let localNodeID else {
+            return nil
+        }
+
+        let senderRole = findNode(withID: localNodeID, in: config.tree)?.label ?? "participant"
+        return LocalContext(config: config, localNodeID: localNodeID, senderRole: senderRole)
+    }
+
+    private func shouldDisplaySiblingBroadcast(_ message: Message, localNodeID: String, tree: TreeNode) -> Bool {
+        guard let senderNodeID = resolveSenderNodeID(for: message, in: tree),
+              senderNodeID != localNodeID,
+              let localParentID = TreeHelpers.parent(of: localNodeID, in: tree)?.id,
+              let senderParentID = TreeHelpers.parent(of: senderNodeID, in: tree)?.id else {
+            return false
+        }
+
+        return localParentID == senderParentID
+    }
+
+    private func resolveSenderNodeID(for message: Message, in tree: TreeNode) -> String? {
+        if TreeHelpers.level(of: message.senderID, in: tree) != nil {
+            return message.senderID
+        }
+        return findNodeID(claimedBy: message.senderID, in: tree)
+    }
+
+    private func findNodeID(claimedBy deviceID: String, in tree: TreeNode) -> String? {
+        if tree.claimedBy == deviceID {
+            return tree.id
+        }
+
+        for child in tree.children {
+            if let nodeID = findNodeID(claimedBy: deviceID, in: child) {
+                return nodeID
+            }
+        }
+        return nil
+    }
+
+    private func findNode(withID nodeID: String, in tree: TreeNode) -> TreeNode? {
+        if tree.id == nodeID {
+            return tree
+        }
+
+        for child in tree.children {
+            if let node = findNode(withID: nodeID, in: child) {
+                return node
+            }
+        }
+        return nil
+    }
+}
+
 @MainActor
 final class AppNetworkCoordinator: ObservableObject {
     let localDeviceID: String
@@ -822,6 +1304,7 @@ final class AppNetworkCoordinator: ObservableObject {
     let discoveryService: NetworkDiscoveryService
     let treeSyncService: TreeSyncService
     let roleClaimService: RoleClaimService
+    let mainViewModel: MainViewModel
 
     init(
         meshService: BluetoothMeshService = BluetoothMeshService(),
@@ -836,16 +1319,23 @@ final class AppNetworkCoordinator: ObservableObject {
             treeSyncService: treeSyncService,
             localDeviceID: localDeviceID
         )
+        mainViewModel = MainViewModel(
+            meshService: meshService,
+            roleClaimService: roleClaimService,
+            localDeviceID: localDeviceID
+        )
 
         meshService.onMessageReceived = { [weak self] message in
             Task { @MainActor in
                 self?.roleClaimService.handleIncomingMessage(message)
+                self?.mainViewModel.handleIncomingMessage(message)
             }
         }
 
         meshService.onPeerConnectionStateChanged = { [weak self] peerID, state in
             Task { @MainActor in
                 self?.roleClaimService.handlePeerStateChange(peerID: peerID, state: state)
+                self?.mainViewModel.handlePeerConnectionStateChanged(peerID: peerID, state: state)
             }
         }
     }

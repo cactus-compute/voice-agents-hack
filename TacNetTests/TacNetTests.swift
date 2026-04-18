@@ -1499,6 +1499,217 @@ final class TacNetTests: XCTestCase {
         XCTAssertTrue(promotedService.isOrganiser)
     }
 
+    @MainActor
+    func testMainViewModelFeedShowsSiblingBroadcastAndCompactionEntriesOrderedNewestFirst() throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+
+        var config = NetworkConfig(
+            networkName: "TacNet Live Feed",
+            networkID: UUID(uuidString: "ABABABAB-1234-5678-90AB-ABABABABABAB")!,
+            createdBy: "organiser-device",
+            pinHash: nil,
+            version: 1,
+            tree: makeFixtureTree()
+        )
+        _ = mutateClaim(nodeID: "alpha", claimedBy: "local-device", in: &config.tree)
+        treeSync.setLocalConfig(config)
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+        let audioService = AudioService(
+            capturer: MockAudioCapturer(clips: []),
+            transcriber: MockCactusTranscriber(results: []),
+            maxRecordingDuration: 60
+        )
+        let viewModel = MainViewModel(
+            meshService: meshService,
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            audioService: audioService
+        )
+
+        let olderCompaction = Message.make(
+            id: UUID(uuidString: "11111111-AAAA-BBBB-CCCC-111111111111")!,
+            type: .compaction,
+            senderID: "alpha-1",
+            senderRole: "Alpha 1",
+            parentID: "alpha",
+            treeLevel: 2,
+            ttl: 4,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            summary: "Alpha child compaction summary",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_010)
+        )
+        let newerSiblingBroadcast = Message.make(
+            id: UUID(uuidString: "22222222-AAAA-BBBB-CCCC-222222222222")!,
+            type: .broadcast,
+            senderID: "bravo",
+            senderRole: "Bravo",
+            parentID: "root",
+            treeLevel: 1,
+            ttl: 4,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            transcript: "Bravo sibling update",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_050)
+        )
+        let filteredOutCousinBroadcast = Message.make(
+            id: UUID(uuidString: "33333333-AAAA-BBBB-CCCC-333333333333")!,
+            type: .broadcast,
+            senderID: "charlie-1",
+            senderRole: "Charlie 1",
+            parentID: "charlie",
+            treeLevel: 2,
+            ttl: 4,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            transcript: "Should not appear for alpha",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+
+        viewModel.handleIncomingMessage(olderCompaction)
+        viewModel.handleIncomingMessage(filteredOutCousinBroadcast)
+        viewModel.handleIncomingMessage(newerSiblingBroadcast)
+
+        XCTAssertEqual(viewModel.feedEntries.count, 2, "Feed should include sibling broadcasts and compactions, excluding unrelated broadcasts")
+        XCTAssertEqual(viewModel.feedEntries.map(\.type), [.broadcast, .compaction], "Newest entry should be first")
+        XCTAssertEqual(viewModel.feedEntries.first?.text, "Bravo sibling update")
+        XCTAssertEqual(viewModel.feedEntries.last?.text, "Alpha child compaction summary")
+        XCTAssertEqual(viewModel.feedEntries.first?.senderRole, "Bravo")
+        XCTAssertEqual(viewModel.feedEntries.last?.senderRole, "Alpha 1")
+    }
+
+    @MainActor
+    func testMainViewModelPTTStateMachineCyclesIdleRecordingSendingIdleAndPublishesBroadcast() async throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+
+        var config = NetworkConfig(
+            networkName: "TacNet PTT",
+            networkID: UUID(uuidString: "CDCDCDCD-1234-5678-90AB-CDCDCDCDCDCD")!,
+            createdBy: "organiser-device",
+            pinHash: nil,
+            version: 1,
+            tree: makeFixtureTree()
+        )
+        _ = mutateClaim(nodeID: "alpha-2", claimedBy: "local-device", in: &config.tree)
+        treeSync.setLocalConfig(config)
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+
+        let clip = makeAlternatingPCMClip(sampleCount: 500, amplitude: 2_000)
+        let audioService = AudioService(
+            capturer: MockAudioCapturer(clips: [clip]),
+            transcriber: MockCactusTranscriber(
+                results: ["Alpha two reporting contact east"],
+                delayNanoseconds: 120_000_000
+            ),
+            maxRecordingDuration: 60
+        )
+
+        let viewModel = MainViewModel(
+            meshService: meshService,
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            audioService: audioService
+        )
+
+        let connectedPeer = UUID(uuidString: "F0F0F0F0-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(connectedPeer, .connected))
+        viewModel.handlePeerConnectionStateChanged(peerID: connectedPeer, state: .connected)
+
+        XCTAssertEqual(viewModel.pttState, .idle)
+        XCTAssertFalse(viewModel.isPTTDisabled)
+
+        await viewModel.startPushToTalk()
+        XCTAssertEqual(viewModel.pttState, .recording)
+
+        let stopTask = Task {
+            await viewModel.stopPushToTalk()
+        }
+
+        let enteredSending = await waitForCondition(timeout: 1.0) {
+            await MainActor.run {
+                viewModel.pttState == .sending
+            }
+        }
+        XCTAssertTrue(enteredSending, "PTT state should pass through sending while transcription and publish run")
+
+        await stopTask.value
+        XCTAssertEqual(viewModel.pttState, .idle)
+        XCTAssertNil(viewModel.errorMessage)
+
+        XCTAssertEqual(transport.sentPackets.count, 1)
+        let outbound = try decodeMessage(from: transport.sentPackets[0].data)
+        XCTAssertEqual(outbound.type, .broadcast)
+        XCTAssertEqual(outbound.payload.transcript, "Alpha two reporting contact east")
+        XCTAssertEqual(outbound.senderID, "local-device")
+        XCTAssertEqual(outbound.parentID, "alpha")
+    }
+
+    @MainActor
+    func testMainViewModelPTTDisabledWhenDisconnectedAndShowsError() async {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+
+        var config = NetworkConfig(
+            networkName: "TacNet Disconnected",
+            networkID: UUID(uuidString: "EFEFEFEF-1234-5678-90AB-EFEFEFEFEFEF")!,
+            createdBy: "organiser-device",
+            pinHash: nil,
+            version: 1,
+            tree: makeFixtureTree()
+        )
+        _ = mutateClaim(nodeID: "alpha-2", claimedBy: "local-device", in: &config.tree)
+        treeSync.setLocalConfig(config)
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+
+        let viewModel = MainViewModel(
+            meshService: meshService,
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            audioService: AudioService(
+                capturer: MockAudioCapturer(clips: [makeAlternatingPCMClip(sampleCount: 300, amplitude: 1_000)]),
+                transcriber: MockCactusTranscriber(results: ["should-not-send"]),
+                maxRecordingDuration: 60
+            )
+        )
+
+        XCTAssertTrue(viewModel.isPTTDisabled)
+        await viewModel.startPushToTalk()
+
+        XCTAssertEqual(viewModel.pttState, .idle)
+        XCTAssertEqual(viewModel.errorMessage, "Disconnected from mesh. Reconnect to use push-to-talk.")
+        XCTAssertTrue(viewModel.isPTTDisabled)
+        XCTAssertTrue(transport.sentPackets.isEmpty, "No message should be sent while disconnected")
+    }
+
     func testAudioServiceAcceptsValidPCM16kMono16BitAndForwardsTranscript() async throws {
         let clip = makeAlternatingPCMClip(sampleCount: 400, amplitude: 1_200)
         let capturer = MockAudioCapturer(clips: [clip])
