@@ -1985,14 +1985,23 @@ final class TreeSyncService: ObservableObject {
 
     private let meshService: BluetoothMeshService
     private let configStore: NetworkConfigStore?
+    private let disconnectTimeout: TimeInterval
+    private var disconnectReparentTasks: [UUID: Task<Void, Never>] = [:]
+    private let defaultTTL = 8
 
     init(
         meshService: BluetoothMeshService = BluetoothMeshService(),
-        configStore: NetworkConfigStore? = nil
+        configStore: NetworkConfigStore? = nil,
+        disconnectTimeout: TimeInterval = 60
     ) {
         self.meshService = meshService
         self.configStore = configStore
+        self.disconnectTimeout = max(0, disconnectTimeout)
         self.localConfig = configStore?.load()
+    }
+
+    deinit {
+        disconnectReparentTasks.values.forEach { $0.cancel() }
     }
 
     func setLocalConfig(_ config: NetworkConfig?) {
@@ -2000,7 +2009,18 @@ final class TreeSyncService: ObservableObject {
         persistLocalConfig(config)
 
         if config == nil {
+            disconnectReparentTasks.values.forEach { $0.cancel() }
+            disconnectReparentTasks.removeAll()
             meshService.clearSessionKey()
+        }
+    }
+
+    func handlePeerStateChange(peerID: UUID, state: PeerConnectionState) {
+        switch state {
+        case .connected:
+            cancelDisconnectTask(for: peerID)
+        case .disconnected:
+            scheduleDisconnectAutoReparent(for: peerID)
         }
     }
 
@@ -2158,6 +2178,134 @@ final class TreeSyncService: ObservableObject {
         return remoteConfig
     }
 
+    private func scheduleDisconnectAutoReparent(for peerID: UUID) {
+        let disconnectedOwnerID = peerID.uuidString
+        guard let localConfig,
+              !Self.claimedNodeIDs(by: disconnectedOwnerID, in: localConfig.tree).isEmpty else {
+            return
+        }
+
+        cancelDisconnectTask(for: peerID)
+        disconnectReparentTasks[peerID] = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let timeoutNanoseconds = UInt64(self.disconnectTimeout * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            guard !Task.isCancelled else {
+                return
+            }
+            self.performDisconnectAutoReparentIfNeeded(for: peerID)
+        }
+    }
+
+    private func cancelDisconnectTask(for peerID: UUID) {
+        disconnectReparentTasks.removeValue(forKey: peerID)?.cancel()
+    }
+
+    private func performDisconnectAutoReparentIfNeeded(for peerID: UUID) {
+        disconnectReparentTasks[peerID] = nil
+
+        guard meshService.connectionState(for: peerID) == .disconnected,
+              var config = localConfig else {
+            return
+        }
+
+        let disconnectedOwnerID = peerID.uuidString
+        let disconnectedNodeIDs = Self.claimedNodeIDs(by: disconnectedOwnerID, in: config.tree)
+        guard !disconnectedNodeIDs.isEmpty else {
+            return
+        }
+
+        var didMutate = false
+
+        for disconnectedNodeID in disconnectedNodeIDs {
+            guard let targetAncestorID = nearestConnectedAncestor(
+                above: disconnectedNodeID,
+                in: config.tree
+            ) else {
+                continue
+            }
+
+            let childNodeIDs = Self.childNodeIDs(of: disconnectedNodeID, in: config.tree)
+            guard !childNodeIDs.isEmpty else {
+                continue
+            }
+
+            for childNodeID in childNodeIDs {
+                guard Self.moveNode(
+                    nodeID: childNodeID,
+                    newParentID: targetAncestorID,
+                    in: &config.tree
+                ) else {
+                    continue
+                }
+
+                config.version += 1
+                didMutate = true
+                publishTreeUpdate(changedNodeID: childNodeID, in: config)
+            }
+        }
+
+        guard didMutate else {
+            return
+        }
+
+        setLocalConfig(config)
+    }
+
+    private func nearestConnectedAncestor(above nodeID: String, in tree: TreeNode) -> String? {
+        var candidateAncestorID = TreeHelpers.parent(of: nodeID, in: tree)?.id
+
+        while let ancestorID = candidateAncestorID {
+            guard let ancestorNode = Self.findNode(withID: ancestorID, in: tree) else {
+                return nil
+            }
+
+            if isConnected(node: ancestorNode) {
+                return ancestorID
+            }
+
+            candidateAncestorID = TreeHelpers.parent(of: ancestorID, in: tree)?.id
+        }
+
+        return nil
+    }
+
+    private func isConnected(node: TreeNode) -> Bool {
+        guard let ownerID = node.claimedBy?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !ownerID.isEmpty else {
+            return true
+        }
+
+        guard let peerID = UUID(uuidString: ownerID) else {
+            return true
+        }
+
+        return meshService.connectionState(for: peerID) == .connected
+    }
+
+    private func publishTreeUpdate(changedNodeID: String, in config: NetworkConfig) {
+        let parentID = TreeHelpers.parent(of: changedNodeID, in: config.tree)?.id
+        let treeLevel = TreeHelpers.level(of: changedNodeID, in: config.tree) ?? 0
+        let treeUpdate = Message.make(
+            type: .treeUpdate,
+            senderID: config.createdBy,
+            senderRole: "organiser",
+            parentID: parentID,
+            treeLevel: treeLevel,
+            ttl: defaultTTL,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            tree: config.tree,
+            networkVersion: config.version
+        )
+        meshService.publish(treeUpdate)
+    }
+
     private func persistLocalConfig(_ config: NetworkConfig?) {
         guard let configStore else {
             return
@@ -2203,6 +2351,113 @@ final class TreeSyncService: ObservableObject {
         for index in tree.children.indices {
             applyClaims(localClaims, to: &tree.children[index])
         }
+    }
+
+    private static func claimedNodeIDs(by ownerID: String, in tree: TreeNode) -> [String] {
+        var claimedNodeIDs: [String] = []
+        collectClaimedNodeIDs(by: ownerID, in: tree, into: &claimedNodeIDs)
+        return claimedNodeIDs
+    }
+
+    private static func collectClaimedNodeIDs(
+        by ownerID: String,
+        in tree: TreeNode,
+        into collection: inout [String]
+    ) {
+        if tree.claimedBy == ownerID {
+            collection.append(tree.id)
+        }
+
+        for child in tree.children {
+            collectClaimedNodeIDs(by: ownerID, in: child, into: &collection)
+        }
+    }
+
+    private static func childNodeIDs(of parentNodeID: String, in tree: TreeNode) -> [String] {
+        findNode(withID: parentNodeID, in: tree)?.children.map(\.id) ?? []
+    }
+
+    private static func findNode(withID nodeID: String, in tree: TreeNode) -> TreeNode? {
+        if tree.id == nodeID {
+            return tree
+        }
+
+        for child in tree.children {
+            if let found = findNode(withID: nodeID, in: child) {
+                return found
+            }
+        }
+
+        return nil
+    }
+
+    private static func moveNode(nodeID: String, newParentID: String, in tree: inout TreeNode) -> Bool {
+        guard nodeID != tree.id, nodeID != newParentID else {
+            return false
+        }
+
+        guard let nodeToMove = findNode(withID: nodeID, in: tree),
+              findNode(withID: newParentID, in: tree) != nil,
+              !treeContainsNode(withID: newParentID, in: nodeToMove) else {
+            return false
+        }
+
+        let originalParentID = TreeHelpers.parent(of: nodeID, in: tree)?.id
+        guard let detachedNode = detachNode(nodeID: nodeID, from: &tree) else {
+            return false
+        }
+
+        guard appendChild(detachedNode, toParentID: newParentID, in: &tree) else {
+            if let originalParentID {
+                _ = appendChild(detachedNode, toParentID: originalParentID, in: &tree)
+            }
+            return false
+        }
+
+        return true
+    }
+
+    private static func detachNode(nodeID: String, from tree: inout TreeNode) -> TreeNode? {
+        if let index = tree.children.firstIndex(where: { $0.id == nodeID }) {
+            return tree.children.remove(at: index)
+        }
+
+        for index in tree.children.indices {
+            if let detachedNode = detachNode(nodeID: nodeID, from: &tree.children[index]) {
+                return detachedNode
+            }
+        }
+
+        return nil
+    }
+
+    private static func appendChild(_ child: TreeNode, toParentID parentID: String, in tree: inout TreeNode) -> Bool {
+        if tree.id == parentID {
+            tree.children.append(child)
+            return true
+        }
+
+        for index in tree.children.indices {
+            if appendChild(child, toParentID: parentID, in: &tree.children[index]) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func treeContainsNode(withID nodeID: String, in tree: TreeNode) -> Bool {
+        if tree.id == nodeID {
+            return true
+        }
+
+        for child in tree.children {
+            if treeContainsNode(withID: nodeID, in: child) {
+                return true
+            }
+        }
+
+        return false
     }
 }
 

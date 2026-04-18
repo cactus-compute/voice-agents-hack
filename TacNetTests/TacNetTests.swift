@@ -1045,6 +1045,166 @@ final class TacNetTests: XCTestCase {
         XCTAssertEqual(syncService.localConfig?.tree.label, "Local v4", "Same-version updates should be a no-op")
     }
 
+    @MainActor
+    func testTreeSyncServiceAutoReparentsChildrenToNearestConnectedAncestorAfterDisconnectTimeout() async throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService, disconnectTimeout: 0.05)
+        let forwardingPeer = UUID(uuidString: "12121212-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let rootPeer = UUID(uuidString: "AAAA0000-0000-0000-0000-000000000001")!
+        let alphaPeer = UUID(uuidString: "BBBB0000-0000-0000-0000-000000000001")!
+        let bravoPeer = UUID(uuidString: "CCCC0000-0000-0000-0000-000000000001")!
+        let charliePeer = UUID(uuidString: "DDDD0000-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(rootPeer, .connected))
+        transport.emit(.connectionStateChanged(alphaPeer, .connected))
+        transport.emit(.connectionStateChanged(bravoPeer, .connected))
+        transport.emit(.connectionStateChanged(charliePeer, .connected))
+
+        let config = makeAutoReparentNetworkConfig(
+            networkID: UUID(uuidString: "ABCDEFFF-0000-0000-0000-000000000001")!,
+            version: 20,
+            rootOwnerID: rootPeer.uuidString,
+            alphaOwnerID: alphaPeer.uuidString,
+            bravoOwnerID: bravoPeer.uuidString,
+            charlieOwnerID: charliePeer.uuidString
+        )
+        syncService.setLocalConfig(config)
+
+        transport.emit(.connectionStateChanged(bravoPeer, .disconnected))
+        syncService.handlePeerStateChange(peerID: bravoPeer, state: .disconnected)
+
+        XCTAssertEqual(
+            TreeHelpers.parent(of: "charlie", in: try XCTUnwrap(syncService.localConfig?.tree))?.id,
+            "bravo",
+            "Before the timeout elapses, the child should remain under the disconnected parent."
+        )
+
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let updatedConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(TreeHelpers.parent(of: "charlie", in: updatedConfig.tree)?.id, "alpha")
+        XCTAssertEqual(updatedConfig.version, 21)
+
+        XCTAssertEqual(transport.sentPackets.count, 1)
+        let treeUpdate = try decodeMessage(from: transport.sentPackets[0].data)
+        XCTAssertEqual(treeUpdate.type, .treeUpdate)
+        XCTAssertEqual(treeUpdate.parentID, "alpha")
+        XCTAssertEqual(treeUpdate.payload.networkVersion, 21)
+        XCTAssertEqual(TreeHelpers.parent(of: "charlie", in: try XCTUnwrap(treeUpdate.payload.tree))?.id, "alpha")
+    }
+
+    @MainActor
+    func testTreeSyncServiceAutoReparentUpdatesCompactionRoutingToNewParent() async throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService, disconnectTimeout: 0.05)
+        let forwardingPeer = UUID(uuidString: "13131313-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let rootPeer = UUID(uuidString: "AAAA0000-0000-0000-0000-000000000002")!
+        let alphaPeer = UUID(uuidString: "BBBB0000-0000-0000-0000-000000000002")!
+        let bravoPeer = UUID(uuidString: "CCCC0000-0000-0000-0000-000000000002")!
+        let charliePeer = UUID(uuidString: "DDDD0000-0000-0000-0000-000000000002")!
+        transport.emit(.connectionStateChanged(rootPeer, .connected))
+        transport.emit(.connectionStateChanged(alphaPeer, .connected))
+        transport.emit(.connectionStateChanged(bravoPeer, .connected))
+        transport.emit(.connectionStateChanged(charliePeer, .connected))
+
+        let config = makeAutoReparentNetworkConfig(
+            networkID: UUID(uuidString: "ABCDEFFF-0000-0000-0000-000000000002")!,
+            version: 30,
+            rootOwnerID: rootPeer.uuidString,
+            alphaOwnerID: alphaPeer.uuidString,
+            bravoOwnerID: bravoPeer.uuidString,
+            charlieOwnerID: charliePeer.uuidString
+        )
+        syncService.setLocalConfig(config)
+
+        let router = MessageRouter()
+        let before = router.makeCompactionMessage(
+            summary: "Charlie reports contact near sector 8.",
+            senderID: "charlie",
+            senderNodeID: "charlie",
+            senderRole: "Charlie",
+            in: config.tree
+        )
+        XCTAssertEqual(before.parentID, "bravo")
+        XCTAssertTrue(router.shouldDisplay(before, for: "bravo", in: config.tree))
+        XCTAssertFalse(router.shouldDisplay(before, for: "alpha", in: config.tree))
+
+        transport.emit(.connectionStateChanged(bravoPeer, .disconnected))
+        syncService.handlePeerStateChange(peerID: bravoPeer, state: .disconnected)
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let updatedTree = try XCTUnwrap(syncService.localConfig?.tree)
+        let after = router.makeCompactionMessage(
+            summary: "Charlie reports contact near sector 8.",
+            senderID: "charlie",
+            senderNodeID: "charlie",
+            senderRole: "Charlie",
+            in: updatedTree
+        )
+
+        XCTAssertEqual(after.parentID, "alpha")
+        XCTAssertTrue(router.shouldDisplay(after, for: "alpha", in: updatedTree))
+        XCTAssertFalse(router.shouldDisplay(after, for: "bravo", in: updatedTree))
+    }
+
+    @MainActor
+    func testTreeSyncServiceAutoReparentHandlesCascadingDisconnectsAcrossMultipleLevels() async throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService, disconnectTimeout: 0.05)
+        let forwardingPeer = UUID(uuidString: "14141414-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let rootPeer = UUID(uuidString: "AAAA0000-0000-0000-0000-000000000003")!
+        let alphaPeer = UUID(uuidString: "BBBB0000-0000-0000-0000-000000000003")!
+        let bravoPeer = UUID(uuidString: "CCCC0000-0000-0000-0000-000000000003")!
+        let charliePeer = UUID(uuidString: "DDDD0000-0000-0000-0000-000000000003")!
+        transport.emit(.connectionStateChanged(rootPeer, .connected))
+        transport.emit(.connectionStateChanged(alphaPeer, .connected))
+        transport.emit(.connectionStateChanged(bravoPeer, .connected))
+        transport.emit(.connectionStateChanged(charliePeer, .connected))
+
+        let config = makeAutoReparentNetworkConfig(
+            networkID: UUID(uuidString: "ABCDEFFF-0000-0000-0000-000000000003")!,
+            version: 40,
+            rootOwnerID: rootPeer.uuidString,
+            alphaOwnerID: alphaPeer.uuidString,
+            bravoOwnerID: bravoPeer.uuidString,
+            charlieOwnerID: charliePeer.uuidString
+        )
+        syncService.setLocalConfig(config)
+
+        transport.emit(.connectionStateChanged(bravoPeer, .disconnected))
+        syncService.handlePeerStateChange(peerID: bravoPeer, state: .disconnected)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(TreeHelpers.parent(of: "charlie", in: try XCTUnwrap(syncService.localConfig?.tree))?.id, "alpha")
+
+        transport.emit(.connectionStateChanged(alphaPeer, .disconnected))
+        syncService.handlePeerStateChange(peerID: alphaPeer, state: .disconnected)
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        let finalConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(TreeHelpers.parent(of: "charlie", in: finalConfig.tree)?.id, "root")
+
+        var parentIDs: [String] = []
+        for packet in transport.sentPackets {
+            let message = try decodeMessage(from: packet.data)
+            guard message.type == .treeUpdate else {
+                continue
+            }
+            if let parentID = message.parentID {
+                parentIDs.append(parentID)
+            }
+        }
+        XCTAssertTrue(parentIDs.contains("alpha"), "Expected first cascade step to reparent under Alpha.")
+        XCTAssertTrue(parentIDs.contains("root"), "Expected second cascade step to reparent under Root.")
+    }
+
     func testNetworkEncryptionServiceEncryptDecryptRoundTripWithPinDerivedSessionKey() throws {
         let organiserService = NetworkEncryptionService()
         let participantService = NetworkEncryptionService()
@@ -2983,6 +3143,50 @@ final class TacNetTests: XCTestCase {
                 children: [
                     TreeNode(id: "alpha", label: "Alpha", claimedBy: nil, children: []),
                     TreeNode(id: "bravo", label: "Bravo", claimedBy: "claimed-device", children: [])
+                ]
+            )
+        )
+    }
+
+    private func makeAutoReparentNetworkConfig(
+        networkID: UUID,
+        version: Int,
+        rootOwnerID: String,
+        alphaOwnerID: String,
+        bravoOwnerID: String,
+        charlieOwnerID: String
+    ) -> NetworkConfig {
+        NetworkConfig(
+            networkName: "Resilience Net",
+            networkID: networkID,
+            createdBy: rootOwnerID,
+            pinHash: nil,
+            version: version,
+            tree: TreeNode(
+                id: "root",
+                label: "Root",
+                claimedBy: rootOwnerID,
+                children: [
+                    TreeNode(
+                        id: "alpha",
+                        label: "Alpha",
+                        claimedBy: alphaOwnerID,
+                        children: [
+                            TreeNode(
+                                id: "bravo",
+                                label: "Bravo",
+                                claimedBy: bravoOwnerID,
+                                children: [
+                                    TreeNode(
+                                        id: "charlie",
+                                        label: "Charlie",
+                                        claimedBy: charlieOwnerID,
+                                        children: []
+                                    )
+                                ]
+                            )
+                        ]
+                    )
                 ]
             )
         )

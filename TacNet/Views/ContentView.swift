@@ -2869,6 +2869,7 @@ final class AppNetworkCoordinator: ObservableObject {
 
         meshService.onPeerConnectionStateChanged = { [weak self] peerID, state in
             Task { @MainActor in
+                self?.treeSyncService.handlePeerStateChange(peerID: peerID, state: state)
                 self?.roleClaimService.handlePeerStateChange(peerID: peerID, state: state)
                 self?.mainViewModel.handlePeerConnectionStateChanged(peerID: peerID, state: state)
                 self?.treeViewModel.handlePeerConnectionStateChanged(peerID: peerID, state: state)
