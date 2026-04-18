@@ -770,9 +770,21 @@ actor CompactionEngine {
         return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }()
 
+    private static let priorityFalsePositivePhraseRegex: NSRegularExpression = {
+        let pattern = #"(?<![A-Za-z0-9_])(contact(?:\s|-)+lens|emergency(?:\s|-)+exit)(?![A-Za-z0-9_])"#
+        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }()
+
     private static func containsPriorityKeyword(in text: String) -> Bool {
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return priorityKeywordRegex.firstMatch(in: text, options: [], range: range) != nil
+        let sourceRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let phraseFilteredText = priorityFalsePositivePhraseRegex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: sourceRange,
+            withTemplate: " "
+        )
+        let range = NSRange(phraseFilteredText.startIndex..<phraseFilteredText.endIndex, in: phraseFilteredText)
+        return priorityKeywordRegex.firstMatch(in: phraseFilteredText, options: [], range: range) != nil
     }
 
     private static func sanitizeSummary(_ raw: String, maxWords: Int) -> String {

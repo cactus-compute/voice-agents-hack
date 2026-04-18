@@ -2860,9 +2860,15 @@ final class TacNetTests: XCTestCase {
 
         await engine.enqueueChildTranscript("Alpha team contacted support and moved out.", from: "alpha-1")
         await engine.enqueueChildTranscript("Subcontract convoy passing through corridor.", from: "alpha-2")
+        await engine.enqueueChildTranscript("Make contact lens appointment after patrol.", from: "alpha-1")
+        await engine.enqueueChildTranscript("Emergency exit sign reported in admin building.", from: "alpha-2")
         await engine.enqueueChildTranscript("Casualties expected if weather worsens.", from: "alpha-1")
         let finalEmissions = await engine.emittedCompactions()
-        XCTAssertEqual(finalEmissions.count, 3, "Substring matches must not trigger immediate compaction")
+        XCTAssertEqual(
+            finalEmissions.count,
+            3,
+            "Substring and known benign phrase matches must not trigger immediate compaction"
+        )
     }
 
     func testCompactionEngineSummaryIsUnderThirtyWordsWithoutFillerAndKeepsCriticalInfo() async throws {
