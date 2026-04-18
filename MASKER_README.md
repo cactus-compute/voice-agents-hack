@@ -253,7 +253,7 @@ protocol. `default_backend()` picks in this order:
 ### Cactus Cloud quick start
 
 ```bash
-cp .env.example .env
+cp platform/masker-library/.env.example .env
 # edit .env, paste your cactus_live_… key into CACTUS_CLOUD_KEY
 set -a; source .env; set +a
 

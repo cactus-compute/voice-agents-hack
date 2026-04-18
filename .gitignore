@@ -33,5 +33,5 @@ weights/
 
 # Node / UI
 node_modules/
-ui/dist/
-ui/.vite/
+platform/masker-admin/dist/
+platform/masker-admin/.vite/
