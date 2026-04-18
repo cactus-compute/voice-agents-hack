@@ -1716,6 +1716,98 @@ final class TacNetTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsViewModelRoleBasedVisibilityForOrganiserAndParticipant() {
+        let organiserContext = makeRoleClaimContextForSettings(
+            localDeviceID: "organiser-device",
+            createdBy: "organiser-device",
+            claims: ["alpha": "organiser-device"]
+        )
+        let organiserViewModel = SettingsViewModel(roleClaimService: organiserContext.roleService)
+
+        XCTAssertTrue(organiserViewModel.showsOrganiserControls)
+        XCTAssertTrue(organiserViewModel.isEditTreeButtonVisible)
+        XCTAssertFalse(organiserViewModel.isEditTreeButtonDisabled)
+
+        let participantContext = makeRoleClaimContextForSettings(
+            localDeviceID: "participant-device",
+            createdBy: "organiser-device",
+            claims: ["alpha": "participant-device"]
+        )
+        let participantViewModel = SettingsViewModel(roleClaimService: participantContext.roleService)
+
+        XCTAssertFalse(participantViewModel.showsOrganiserControls)
+        XCTAssertFalse(participantViewModel.isEditTreeButtonVisible)
+        XCTAssertTrue(participantViewModel.isEditTreeButtonDisabled)
+    }
+
+    @MainActor
+    func testSettingsViewModelReleaseRoleBroadcastsReleaseAndClearsClaim() throws {
+        let context = makeRoleClaimContextForSettings(
+            localDeviceID: "local-device",
+            createdBy: "organiser-device",
+            claims: ["alpha": "local-device"]
+        )
+        let viewModel = SettingsViewModel(roleClaimService: context.roleService)
+
+        XCTAssertTrue(viewModel.canReleaseRole)
+        XCTAssertTrue(viewModel.releaseRole())
+        XCTAssertFalse(viewModel.canReleaseRole)
+        XCTAssertEqual(viewModel.statusMessage, "Released alpha.")
+
+        XCTAssertNil(claimedByValue(nodeID: "alpha", in: context.syncService.localConfig))
+        XCTAssertEqual(context.transport.sentPackets.count, 1)
+        let releaseMessage = try decodeMessage(from: context.transport.sentPackets[0].data)
+        XCTAssertEqual(releaseMessage.type, .release)
+        XCTAssertEqual(releaseMessage.payload.claimedNodeID, "alpha")
+    }
+
+    @MainActor
+    func testSettingsViewModelOrganiserCanAddRenameAndRemoveNodesFromSettings() throws {
+        let context = makeRoleClaimContextForSettings(
+            localDeviceID: "organiser-device",
+            createdBy: "organiser-device"
+        )
+        let viewModel = SettingsViewModel(roleClaimService: context.roleService)
+
+        viewModel.selectedNodeID = "root"
+        viewModel.newChildLabelDraft = "Delta"
+        XCTAssertTrue(viewModel.addChildToSelectedNode())
+
+        let createdNodeID = try XCTUnwrap(viewModel.selectedNodeID)
+        XCTAssertEqual(findNode(nodeID: createdNodeID, in: try XCTUnwrap(context.syncService.localConfig).tree)?.label, "Delta")
+
+        viewModel.renameDraft = "Delta Prime"
+        XCTAssertTrue(viewModel.renameSelectedNode())
+        XCTAssertEqual(findNode(nodeID: createdNodeID, in: try XCTUnwrap(context.syncService.localConfig).tree)?.label, "Delta Prime")
+
+        XCTAssertTrue(viewModel.removeSelectedNode())
+        XCTAssertNil(findNode(nodeID: createdNodeID, in: try XCTUnwrap(context.syncService.localConfig).tree))
+
+        let sentTypes = try context.transport.sentPackets.map { try decodeMessage(from: $0.data).type }
+        XCTAssertEqual(sentTypes, [.treeUpdate, .treeUpdate, .treeUpdate])
+    }
+
+    @MainActor
+    func testSettingsViewModelPromoteFromSettingsTransfersOrganiserPrivileges() throws {
+        let context = makeRoleClaimContextForSettings(
+            localDeviceID: "old-organiser-device",
+            createdBy: "old-organiser-device",
+            claims: ["alpha": "new-organiser-device"]
+        )
+        let viewModel = SettingsViewModel(roleClaimService: context.roleService)
+
+        viewModel.promoteTargetNodeID = "alpha"
+        XCTAssertTrue(viewModel.promoteSelectedNode())
+        XCTAssertEqual(context.syncService.localConfig?.createdBy, "new-organiser-device")
+        XCTAssertFalse(viewModel.showsOrganiserControls)
+
+        XCTAssertEqual(context.transport.sentPackets.count, 1)
+        let promoteMessage = try decodeMessage(from: context.transport.sentPackets[0].data)
+        XCTAssertEqual(promoteMessage.type, .promote)
+        XCTAssertEqual(promoteMessage.payload.targetNodeID, "alpha")
+    }
+
+    @MainActor
     func testDataFlowViewModelIncomingSectionListsReceivedMessagesWithMetadata() {
         let viewModel = DataFlowViewModel()
         let olderTimestamp = Date(timeIntervalSince1970: 1_700_800_010)
@@ -2582,6 +2674,47 @@ final class TacNetTests: XCTestCase {
 
     private func deterministicUUID(from value: Int) -> UUID {
         UUID(uuidString: String(format: "00000000-0000-0000-0000-%012X", value))!
+    }
+
+    @MainActor
+    private func makeRoleClaimContextForSettings(
+        localDeviceID: String,
+        createdBy: String,
+        claims: [String: String] = [:]
+    ) -> (transport: MockBluetoothMeshTransport, syncService: TreeSyncService, roleService: RoleClaimService) {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(
+            transport: transport,
+            deduplicator: MessageDeduplicator(capacity: 1_000)
+        )
+        let syncService = TreeSyncService(meshService: meshService)
+        transport.emit(
+            .connectionStateChanged(
+                UUID(uuidString: "D0D0D0D0-0000-0000-0000-000000000001")!,
+                .connected
+            )
+        )
+
+        var config = NetworkConfig(
+            networkName: "TacNet Settings",
+            networkID: UUID(uuidString: "DEADBEEF-CAFE-BABE-FADE-000000000001")!,
+            createdBy: createdBy,
+            pinHash: nil,
+            version: 1,
+            tree: makeFixtureTree()
+        )
+        for (nodeID, ownerID) in claims {
+            _ = mutateClaim(nodeID: nodeID, claimedBy: ownerID, in: &config.tree)
+        }
+        syncService.setLocalConfig(config)
+
+        let roleService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: syncService,
+            localDeviceID: localDeviceID,
+            disconnectTimeout: 60
+        )
+        return (transport, syncService, roleService)
     }
 
     private func makeModelDownloadSandbox() throws -> ModelDownloadSandbox {

@@ -81,6 +81,7 @@ struct ContentView: View {
                     mainViewModel: appNetworkCoordinator.mainViewModel,
                     treeViewModel: appNetworkCoordinator.treeViewModel,
                     dataFlowViewModel: appNetworkCoordinator.dataFlowViewModel,
+                    settingsViewModel: appNetworkCoordinator.settingsViewModel,
                     onBackToRoleSelection: {
                         onboardingRoute = .roleSelection
                     }
@@ -871,6 +872,7 @@ private struct TacNetTabShellView: View {
     @ObservedObject var mainViewModel: MainViewModel
     @ObservedObject var treeViewModel: TreeViewModel
     @ObservedObject var dataFlowViewModel: DataFlowViewModel
+    @ObservedObject var settingsViewModel: SettingsViewModel
     let onBackToRoleSelection: () -> Void
 
     @State private var selectedTab: TacNetTab = .main
@@ -898,7 +900,10 @@ private struct TacNetTabShellView: View {
                 }
                 .tag(TacNetTab.dataFlow)
 
-            SettingsView()
+            SettingsView(
+                viewModel: settingsViewModel,
+                onReleaseRole: onBackToRoleSelection
+            )
                 .tabItem {
                     Label(TacNetTab.settings.title, systemImage: TacNetTab.settings.systemImage)
                 }
@@ -1509,23 +1514,500 @@ struct DataFlowView: View {
     }
 }
 
-struct SettingsView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "gearshape")
-                .font(.system(size: 42))
-                .foregroundStyle(Color.accentColor)
-            Text("Settings")
-                .font(.title3.weight(.semibold))
-            Text("Role controls and organiser options will appear here.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
+@MainActor
+final class SettingsViewModel: ObservableObject {
+    struct TreeRow: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let depth: Int
+        let claimedBy: String?
+
+        var displayLabel: String {
+            label.isEmpty ? "(unnamed node)" : label
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        var claimedByText: String {
+            if let claimedBy, !claimedBy.isEmpty {
+                return "claimed_by: \(claimedBy)"
+            }
+            return "claimed_by: Available"
+        }
+
+        var promoteDisplayText: String {
+            if let claimedBy, !claimedBy.isEmpty {
+                return "\(displayLabel) (\(claimedBy))"
+            }
+            return displayLabel
+        }
+    }
+
+    @Published var selectedNodeID: String?
+    @Published var renameDraft: String = ""
+    @Published var newChildLabelDraft: String = ""
+    @Published var promoteTargetNodeID: String?
+    @Published private(set) var statusMessage: String?
+
+    private let roleClaimService: RoleClaimService
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(roleClaimService: RoleClaimService) {
+        self.roleClaimService = roleClaimService
+        synchronizeSelectionAndTargets()
+
+        roleClaimService.$networkConfig
+            .combineLatest(roleClaimService.$activeClaimNodeID)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _, _ in
+                guard let self else {
+                    return
+                }
+                self.objectWillChange.send()
+                self.synchronizeSelectionAndTargets()
+            }
+            .store(in: &cancellables)
+    }
+
+    var showsOrganiserControls: Bool {
+        roleClaimService.isOrganiser
+    }
+
+    var isEditTreeButtonVisible: Bool {
+        showsOrganiserControls
+    }
+
+    var isEditTreeButtonDisabled: Bool {
+        !showsOrganiserControls
+    }
+
+    var canReleaseRole: Bool {
+        roleClaimService.activeClaimNodeID != nil
+    }
+
+    var claimedRoleDescription: String {
+        guard let activeClaimNodeID = roleClaimService.activeClaimNodeID else {
+            return "No active role claimed."
+        }
+        return "Claimed node: \(activeClaimNodeID)"
+    }
+
+    var treeRows: [TreeRow] {
+        guard let tree = roleClaimService.networkConfig?.tree else {
+            return []
+        }
+
+        var rows: [TreeRow] = []
+        appendRows(from: tree, depth: 0, into: &rows)
+        return rows
+    }
+
+    var promotableNodeRows: [TreeRow] {
+        guard let config = roleClaimService.networkConfig else {
+            return []
+        }
+
+        return treeRows.filter { row in
+            guard let claimedBy = row.claimedBy, !claimedBy.isEmpty else {
+                return false
+            }
+            return claimedBy != config.createdBy
+        }
+    }
+
+    var canPromoteSelectedNode: Bool {
+        showsOrganiserControls && promoteTargetNodeID != nil
+    }
+
+    var canRenameSelectedNode: Bool {
+        showsOrganiserControls &&
+            selectedNodeID != nil &&
+            !renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canAddChildNode: Bool {
+        showsOrganiserControls &&
+            !newChildLabelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            (selectedNodeID != nil || roleClaimService.networkConfig?.tree.id != nil)
+    }
+
+    var canRemoveSelectedNode: Bool {
+        guard showsOrganiserControls,
+              let selectedNodeID,
+              let rootNodeID = roleClaimService.networkConfig?.tree.id else {
+            return false
+        }
+        return selectedNodeID != rootNodeID
+    }
+
+    func selectNode(_ nodeID: String) {
+        selectedNodeID = nodeID
+        if let tree = roleClaimService.networkConfig?.tree,
+           let node = findNode(withID: nodeID, in: tree) {
+            renameDraft = node.label
+        }
+    }
+
+    @discardableResult
+    func releaseRole() -> Bool {
+        let result = roleClaimService.releaseActiveClaim()
+        switch result {
+        case .released(let nodeID):
+            statusMessage = "Released \(nodeID)."
+            synchronizeSelectionAndTargets()
+            return true
+        case .noActiveClaim:
+            statusMessage = "No claimed role to release."
+            return false
+        case .unavailable:
+            statusMessage = "Network unavailable."
+            return false
+        case .claimed, .rejected:
+            statusMessage = nil
+            return false
+        }
+    }
+
+    @discardableResult
+    func addChildToSelectedNode() -> Bool {
+        guard showsOrganiserControls else {
+            statusMessage = "Only organiser can edit the tree."
+            return false
+        }
+
+        guard let parentID = selectedNodeID ?? roleClaimService.networkConfig?.tree.id else {
+            statusMessage = "No tree available to edit."
+            return false
+        }
+
+        guard let createdNode = roleClaimService.addNode(parentID: parentID, label: newChildLabelDraft) else {
+            statusMessage = "Unable to add child node."
+            return false
+        }
+
+        selectedNodeID = createdNode.id
+        renameDraft = createdNode.label
+        newChildLabelDraft = ""
+        statusMessage = "Added \(createdNode.label)."
+        synchronizeSelectionAndTargets()
+        return true
+    }
+
+    @discardableResult
+    func renameSelectedNode() -> Bool {
+        guard showsOrganiserControls else {
+            statusMessage = "Only organiser can edit the tree."
+            return false
+        }
+
+        guard let selectedNodeID else {
+            statusMessage = "Select a node to rename."
+            return false
+        }
+
+        guard roleClaimService.renameNode(nodeID: selectedNodeID, newLabel: renameDraft) else {
+            statusMessage = "Unable to rename selected node."
+            return false
+        }
+
+        statusMessage = "Renamed \(selectedNodeID)."
+        synchronizeSelectionAndTargets()
+        return true
+    }
+
+    @discardableResult
+    func removeSelectedNode() -> Bool {
+        guard showsOrganiserControls else {
+            statusMessage = "Only organiser can edit the tree."
+            return false
+        }
+
+        guard let selectedNodeID else {
+            statusMessage = "Select a node to remove."
+            return false
+        }
+
+        guard roleClaimService.removeNode(nodeID: selectedNodeID) else {
+            statusMessage = "Unable to remove selected node."
+            return false
+        }
+
+        statusMessage = "Removed \(selectedNodeID)."
+        synchronizeSelectionAndTargets()
+        return true
+    }
+
+    @discardableResult
+    func promoteSelectedNode() -> Bool {
+        guard showsOrganiserControls else {
+            statusMessage = "Only organiser can promote roles."
+            return false
+        }
+
+        guard let targetNodeID = promoteTargetNodeID else {
+            statusMessage = "Select a claimed node to promote."
+            return false
+        }
+
+        do {
+            try roleClaimService.validatePromoteTarget(nodeID: targetNodeID)
+        } catch PromoteValidationError.targetUnclaimed {
+            statusMessage = "Selected node is not claimed."
+            return false
+        } catch PromoteValidationError.nodeNotFound {
+            statusMessage = "Selected node no longer exists."
+            return false
+        } catch {
+            statusMessage = "Unable to validate promote target."
+            return false
+        }
+
+        guard roleClaimService.promote(nodeID: targetNodeID) else {
+            statusMessage = "Unable to promote selected node."
+            return false
+        }
+
+        statusMessage = "Promoted \(targetNodeID) to organiser."
+        synchronizeSelectionAndTargets()
+        return true
+    }
+
+    private func synchronizeSelectionAndTargets() {
+        guard let tree = roleClaimService.networkConfig?.tree else {
+            selectedNodeID = nil
+            renameDraft = ""
+            promoteTargetNodeID = nil
+            return
+        }
+
+        if let selectedNodeID,
+           let selectedNode = findNode(withID: selectedNodeID, in: tree) {
+            renameDraft = selectedNode.label
+        } else {
+            selectedNodeID = tree.id
+            renameDraft = tree.label
+        }
+
+        let promotableIDs = Set(promotableNodeRows.map(\.id))
+        if promoteTargetNodeID == nil {
+            promoteTargetNodeID = promotableNodeRows.first?.id
+        } else if let promoteTargetNodeID, !promotableIDs.contains(promoteTargetNodeID) {
+            self.promoteTargetNodeID = promotableNodeRows.first?.id
+        }
+    }
+
+    private func appendRows(from node: TreeNode, depth: Int, into rows: inout [TreeRow]) {
+        rows.append(
+            TreeRow(
+                id: node.id,
+                label: node.label,
+                depth: depth,
+                claimedBy: node.claimedBy
+            )
+        )
+
+        for child in node.children {
+            appendRows(from: child, depth: depth + 1, into: &rows)
+        }
+    }
+
+    private func findNode(withID nodeID: String, in tree: TreeNode) -> TreeNode? {
+        if tree.id == nodeID {
+            return tree
+        }
+
+        for child in tree.children {
+            if let node = findNode(withID: nodeID, in: child) {
+                return node
+            }
+        }
+        return nil
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var viewModel: SettingsViewModel
+    let onReleaseRole: () -> Void
+
+    @State private var isShowingTreeEditor = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                roleSection
+
+                if viewModel.isEditTreeButtonVisible {
+                    organiserSection
+                } else {
+                    GroupBox("Organiser Controls") {
+                        Text("Only the organiser can edit tree structure or promote roles.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let statusMessage = viewModel.statusMessage {
+                    Text(statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
         .navigationTitle("Settings")
+        .sheet(isPresented: $isShowingTreeEditor) {
+            SettingsTreeEditorView(viewModel: viewModel)
+        }
         .accessibilityIdentifier("tacnet.settings.root")
+    }
+
+    private var roleSection: some View {
+        GroupBox("Role") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(viewModel.claimedRoleDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Button("Release Role") {
+                    if viewModel.releaseRole() {
+                        onReleaseRole()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!viewModel.canReleaseRole)
+                .accessibilityIdentifier("tacnet.settings.releaseRoleButton")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var organiserSection: some View {
+        GroupBox("Organiser Controls") {
+            VStack(alignment: .leading, spacing: 10) {
+                Button("Edit Tree") {
+                    isShowingTreeEditor = true
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isEditTreeButtonDisabled)
+                .accessibilityIdentifier("tacnet.settings.editTreeButton")
+
+                if viewModel.promotableNodeRows.isEmpty {
+                    Text("No claimed participants available to promote.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Promote Claimed Node", selection: $viewModel.promoteTargetNodeID) {
+                        ForEach(viewModel.promotableNodeRows) { row in
+                            Text(row.promoteDisplayText)
+                                .tag(Optional(row.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Button("Promote") {
+                        _ = viewModel.promoteSelectedNode()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.canPromoteSelectedNode)
+                    .accessibilityIdentifier("tacnet.settings.promoteButton")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct SettingsTreeEditorView: View {
+    @ObservedObject var viewModel: SettingsViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    GroupBox("Tree Nodes") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if viewModel.treeRows.isEmpty {
+                                Text("No tree is currently available.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(viewModel.treeRows) { row in
+                                    Button {
+                                        viewModel.selectNode(row.id)
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(row.displayLabel)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(.primary)
+                                                Text(row.claimedByText)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+
+                                            Spacer(minLength: 8)
+
+                                            if viewModel.selectedNodeID == row.id {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .foregroundStyle(.blue)
+                                            }
+                                        }
+                                        .padding(.vertical, 6)
+                                        .padding(.leading, CGFloat(row.depth) * 14)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    GroupBox("Edit Selected Node") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Rename selected node", text: $viewModel.renameDraft)
+                                .textFieldStyle(.roundedBorder)
+
+                            HStack(spacing: 10) {
+                                Button("Rename") {
+                                    _ = viewModel.renameSelectedNode()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!viewModel.canRenameSelectedNode)
+
+                                Button("Remove", role: .destructive) {
+                                    _ = viewModel.removeSelectedNode()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(!viewModel.canRemoveSelectedNode)
+                            }
+
+                            TextField("New child label", text: $viewModel.newChildLabelDraft)
+                                .textFieldStyle(.roundedBorder)
+
+                            Button("Add Child") {
+                                _ = viewModel.addChildToSelectedNode()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!viewModel.canAddChildNode)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 12)
+            }
+            .navigationTitle("Edit Tree")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2007,6 +2489,7 @@ final class AppNetworkCoordinator: ObservableObject {
     let mainViewModel: MainViewModel
     let treeViewModel: TreeViewModel
     let dataFlowViewModel: DataFlowViewModel
+    let settingsViewModel: SettingsViewModel
 
     private var compactionEngine: CompactionEngine?
     private var compactionEngineNodeID: String?
@@ -2035,6 +2518,7 @@ final class AppNetworkCoordinator: ObservableObject {
             localDeviceID: localDeviceID
         )
         dataFlowViewModel = DataFlowViewModel()
+        settingsViewModel = SettingsViewModel(roleClaimService: roleClaimService)
 
         roleClaimService.$networkConfig
             .combineLatest(roleClaimService.$activeClaimNodeID)
