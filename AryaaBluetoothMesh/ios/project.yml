@@ -1,0 +1,41 @@
+name: MeshNode
+options:
+  bundleIdPrefix: com.cactushack
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+targets:
+  MeshNode:
+    type: application
+    platform: iOS
+    sources:
+      - path: MeshNode
+    info:
+      path: MeshNode/Info.plist
+      properties:
+        CFBundleDisplayName: MeshNode
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        NSBluetoothAlwaysUsageDescription: "MeshNode uses Bluetooth to communicate with nearby devices in the mesh network."
+        NSBluetoothPeripheralUsageDescription: "MeshNode uses Bluetooth to communicate with nearby devices in the mesh network."
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - armv7
+          - bluetooth-le
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        PRODUCT_BUNDLE_IDENTIFIER: com.cactushack.MeshNode
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
