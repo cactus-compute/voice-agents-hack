@@ -71,7 +71,11 @@ def _backend_from_arg(name: str):
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run the four BACKLOG scenarios end-to-end.")
     p.add_argument("--backend", choices=["stub", "cactus", "gemini", "auto"], default="stub")
-    p.add_argument("--policy", choices=["hipaa_base", "hipaa_logging", "hipaa_clinical"], default="hipaa_base")
+    p.add_argument(
+        "--policy",
+        choices=["hipaa_base", "hipaa_logging_strict", "hipaa_clinical_context"],
+        default="hipaa_base",
+    )
     p.add_argument("--json", action="store_true", help="emit machine-readable JSONL")
     p.add_argument("--scenario", help="run only the scenario whose label contains this string")
     args = p.parse_args(argv)
@@ -104,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  user      : {s.text}")
         print(f"  detected  : {[e.type.value for e in result.detection.entities]} (risk={result.detection.risk_level})")
         print(f"  policy    : {result.policy.route}  (expected={s.expected_route})")
+        print(f"  reasons   : {', '.join(result.policy.reasons)}")
         print(f"  rationale : {result.policy.rationale}")
         print(f"  masked    : {result.masked_input.text}")
         print(f"  → model   : {result.model_output[:160]}")
