@@ -1710,6 +1710,146 @@ final class TacNetTests: XCTestCase {
         XCTAssertTrue(transport.sentPackets.isEmpty, "No message should be sent while disconnected")
     }
 
+    func testTabNavigationDefinesAllFourTabsInExpectedOrder() {
+        XCTAssertEqual(TacNetTab.allCases.count, 4)
+        XCTAssertEqual(TacNetTab.allCases.map(\.title), ["Main", "Tree View", "Data Flow", "Settings"])
+    }
+
+    @MainActor
+    func testTreeViewModelBuildsHierarchyAndShowsClaimedByLabels() {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+
+        var config = NetworkConfig(
+            networkName: "TacNet Tree",
+            networkID: UUID(uuidString: "12345678-90AB-CDEF-1234-567890ABCDEF")!,
+            createdBy: "organiser-device",
+            pinHash: nil,
+            version: 1,
+            tree: makeFixtureTree()
+        )
+        _ = mutateClaim(nodeID: "alpha", claimedBy: "alpha-device", in: &config.tree)
+        treeSync.setLocalConfig(config)
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+
+        let viewModel = TreeViewModel(
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            nowProvider: { Date(timeIntervalSince1970: 1_700_500_000) }
+        )
+
+        let alphaRow = viewModel.rows.first(where: { $0.id == "alpha" })
+        let bravoRow = viewModel.rows.first(where: { $0.id == "bravo" })
+        let alphaOneRow = viewModel.rows.first(where: { $0.id == "alpha-1" })
+
+        XCTAssertEqual(alphaRow?.depth, 1)
+        XCTAssertEqual(alphaOneRow?.depth, 2)
+        XCTAssertEqual(alphaRow?.claimedByText, "claimed_by: alpha-device")
+        XCTAssertEqual(bravoRow?.claimedByText, "claimed_by: Available")
+    }
+
+    @MainActor
+    func testTreeViewModelStatusTransitionsUseThirtyAndSixtySecondThresholds() {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+        treeSync.setLocalConfig(
+            NetworkConfig(
+                networkName: "TacNet Status",
+                networkID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000001")!,
+                createdBy: "organiser-device",
+                pinHash: nil,
+                version: 1,
+                tree: makeFixtureTree()
+            )
+        )
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+
+        let baseTime = Date(timeIntervalSince1970: 1_700_600_000)
+        let viewModel = TreeViewModel(
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            nowProvider: { baseTime }
+        )
+
+        XCTAssertEqual(viewModel.status(for: "alpha", now: baseTime.addingTimeInterval(30)), .active)
+        XCTAssertEqual(viewModel.status(for: "alpha", now: baseTime.addingTimeInterval(31)), .idle)
+        XCTAssertEqual(viewModel.status(for: "alpha", now: baseTime.addingTimeInterval(60)), .idle)
+        XCTAssertEqual(viewModel.status(for: "alpha", now: baseTime.addingTimeInterval(61)), .disconnected)
+    }
+
+    @MainActor
+    func testTreeViewModelCompactionSummaryIsTruncatedAndExpandsOnToggle() {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let treeSync = TreeSyncService(meshService: meshService)
+        treeSync.setLocalConfig(
+            NetworkConfig(
+                networkName: "TacNet Compaction",
+                networkID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000002")!,
+                createdBy: "organiser-device",
+                pinHash: nil,
+                version: 1,
+                tree: makeFixtureTree()
+            )
+        )
+
+        let roleClaimService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: treeSync,
+            localDeviceID: "local-device",
+            disconnectTimeout: 60
+        )
+
+        let viewModel = TreeViewModel(
+            roleClaimService: roleClaimService,
+            localDeviceID: "local-device",
+            nowProvider: { Date(timeIntervalSince1970: 1_700_700_000) }
+        )
+
+        let longSummary = "Alpha child reports two hostiles near ridge line, one casualty, route blocked by debris, and requests urgent support from Bravo squad immediately."
+        let compactionMessage = Message.make(
+            id: UUID(uuidString: "AAAA1111-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
+            type: .compaction,
+            senderID: "alpha-1",
+            senderRole: "Alpha 1",
+            parentID: "alpha",
+            treeLevel: 2,
+            ttl: 4,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            summary: longSummary,
+            timestamp: Date(timeIntervalSince1970: 1_700_700_010)
+        )
+
+        viewModel.handleIncomingMessage(compactionMessage)
+
+        let alphaBeforeExpand = viewModel.rows.first(where: { $0.id == "alpha" })
+        XCTAssertNotNil(alphaBeforeExpand?.compactionDisplayText)
+        XCTAssertNotEqual(alphaBeforeExpand?.compactionDisplayText, longSummary)
+        XCTAssertTrue(alphaBeforeExpand?.compactionDisplayText?.hasSuffix("…") == true)
+
+        viewModel.toggleCompactionExpansion(for: "alpha")
+        let alphaAfterExpand = viewModel.rows.first(where: { $0.id == "alpha" })
+        XCTAssertEqual(alphaAfterExpand?.compactionDisplayText, longSummary)
+        XCTAssertTrue(alphaAfterExpand?.isCompactionExpanded == true)
+    }
+
     func testAudioServiceAcceptsValidPCM16kMono16BitAndForwardsTranscript() async throws {
         let clip = makeAlternatingPCMClip(sampleCount: 400, amplitude: 1_200)
         let capturer = MockAudioCapturer(clips: [clip])

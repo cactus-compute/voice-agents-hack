@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct ContentView: View {
     @StateObject private var bootstrapViewModel = AppBootstrapViewModel()
@@ -76,8 +77,9 @@ struct ContentView: View {
                 }
 
             case .main:
-                MainView(
-                    viewModel: appNetworkCoordinator.mainViewModel,
+                TacNetTabShellView(
+                    mainViewModel: appNetworkCoordinator.mainViewModel,
+                    treeViewModel: appNetworkCoordinator.treeViewModel,
                     onBackToRoleSelection: {
                         onboardingRoute = .roleSelection
                     }
@@ -829,6 +831,449 @@ private struct RoleSelectionView: View {
     }
 }
 
+enum TacNetTab: String, CaseIterable, Identifiable {
+    case main
+    case treeView
+    case dataFlow
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .main:
+            return "Main"
+        case .treeView:
+            return "Tree View"
+        case .dataFlow:
+            return "Data Flow"
+        case .settings:
+            return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .main:
+            return "dot.radiowaves.left.and.right"
+        case .treeView:
+            return "point.3.filled.connected.trianglepath.dotted"
+        case .dataFlow:
+            return "arrow.triangle.branch"
+        case .settings:
+            return "gearshape"
+        }
+    }
+}
+
+private struct TacNetTabShellView: View {
+    @ObservedObject var mainViewModel: MainViewModel
+    @ObservedObject var treeViewModel: TreeViewModel
+    let onBackToRoleSelection: () -> Void
+
+    @State private var selectedTab: TacNetTab = .main
+
+    var body: some View {
+        TabView(selection: $selectedTab) {
+            MainView(
+                viewModel: mainViewModel,
+                onBackToRoleSelection: onBackToRoleSelection
+            )
+            .tabItem {
+                Label(TacNetTab.main.title, systemImage: TacNetTab.main.systemImage)
+            }
+            .tag(TacNetTab.main)
+
+            TreeView(viewModel: treeViewModel)
+                .tabItem {
+                    Label(TacNetTab.treeView.title, systemImage: TacNetTab.treeView.systemImage)
+                }
+                .tag(TacNetTab.treeView)
+
+            DataFlowView()
+                .tabItem {
+                    Label(TacNetTab.dataFlow.title, systemImage: TacNetTab.dataFlow.systemImage)
+                }
+                .tag(TacNetTab.dataFlow)
+
+            SettingsView()
+                .tabItem {
+                    Label(TacNetTab.settings.title, systemImage: TacNetTab.settings.systemImage)
+                }
+                .tag(TacNetTab.settings)
+        }
+        .accessibilityIdentifier("tacnet.tab.root")
+    }
+}
+
+@MainActor
+final class TreeViewModel: ObservableObject {
+    enum NodeStatus: Equatable {
+        case active
+        case idle
+        case disconnected
+
+        var color: Color {
+            switch self {
+            case .active:
+                return .green
+            case .idle:
+                return .orange
+            case .disconnected:
+                return .red
+            }
+        }
+
+        var labelText: String {
+            switch self {
+            case .active:
+                return "Active"
+            case .idle:
+                return "Idle"
+            case .disconnected:
+                return "Disconnected"
+            }
+        }
+    }
+
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let depth: Int
+        let claimedByText: String
+        let compactionDisplayText: String?
+        let isCompactionExpanded: Bool
+    }
+
+    private struct CompactionEntry: Equatable {
+        let summary: String
+        let senderRole: String
+        let updatedAt: Date
+    }
+
+    @Published private(set) var rows: [Row] = []
+
+    private let roleClaimService: RoleClaimService
+    private let localDeviceID: String
+    private let nowProvider: () -> Date
+
+    private var lastActivityByNodeID: [String: Date] = [:]
+    private var compactionsByParentNodeID: [String: CompactionEntry] = [:]
+    private var expandedCompactionNodeIDs: Set<String> = []
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(
+        roleClaimService: RoleClaimService,
+        localDeviceID: String,
+        nowProvider: @escaping () -> Date = Date.init
+    ) {
+        self.roleClaimService = roleClaimService
+        self.localDeviceID = localDeviceID
+        self.nowProvider = nowProvider
+
+        roleClaimService.$networkConfig
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshFromCurrentTree()
+            }
+            .store(in: &cancellables)
+
+        refreshFromCurrentTree()
+    }
+
+    func refreshFromCurrentTree() {
+        refreshRows(now: nowProvider())
+    }
+
+    func status(for nodeID: String, now: Date = Date()) -> NodeStatus {
+        let referenceDate = lastActivityByNodeID[nodeID] ?? now
+        let elapsed = max(0, now.timeIntervalSince(referenceDate))
+
+        if elapsed > 60 {
+            return .disconnected
+        }
+        if elapsed > 30 {
+            return .idle
+        }
+        return .active
+    }
+
+    func toggleCompactionExpansion(for nodeID: String) {
+        if expandedCompactionNodeIDs.contains(nodeID) {
+            expandedCompactionNodeIDs.remove(nodeID)
+        } else {
+            expandedCompactionNodeIDs.insert(nodeID)
+        }
+        refreshRows(now: nowProvider())
+    }
+
+    func handleIncomingMessage(_ message: Message) {
+        guard let tree = roleClaimService.networkConfig?.tree else {
+            return
+        }
+
+        if let senderNodeID = resolveSenderNodeID(for: message, in: tree) {
+            lastActivityByNodeID[senderNodeID] = message.timestamp
+        }
+
+        if message.type == .compaction,
+           let summary = message.payload.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty,
+           let parentNodeID = resolvedParentNodeID(for: message, in: tree) {
+            compactionsByParentNodeID[parentNodeID] = CompactionEntry(
+                summary: summary,
+                senderRole: message.senderRole,
+                updatedAt: message.timestamp
+            )
+        }
+
+        refreshRows(now: nowProvider())
+    }
+
+    func handlePeerConnectionStateChanged(peerID: UUID, state: PeerConnectionState) {
+        guard state == .connected,
+              let tree = roleClaimService.networkConfig?.tree,
+              let nodeID = findNodeID(claimedBy: peerID.uuidString, in: tree) else {
+            return
+        }
+
+        lastActivityByNodeID[nodeID] = nowProvider()
+        refreshRows(now: nowProvider())
+    }
+
+    private func refreshRows(now: Date) {
+        guard let tree = roleClaimService.networkConfig?.tree else {
+            rows = []
+            lastActivityByNodeID = [:]
+            compactionsByParentNodeID = [:]
+            expandedCompactionNodeIDs = []
+            return
+        }
+
+        let knownNodeIDs = collectNodeIDs(in: tree)
+        lastActivityByNodeID = lastActivityByNodeID.filter { knownNodeIDs.contains($0.key) }
+        compactionsByParentNodeID = compactionsByParentNodeID.filter { knownNodeIDs.contains($0.key) }
+        expandedCompactionNodeIDs = expandedCompactionNodeIDs.intersection(knownNodeIDs)
+
+        var flattenedRows: [Row] = []
+        appendRows(from: tree, depth: 0, now: now, into: &flattenedRows)
+        rows = flattenedRows
+    }
+
+    private func appendRows(from node: TreeNode, depth: Int, now: Date, into rows: inout [Row]) {
+        if lastActivityByNodeID[node.id] == nil {
+            if node.claimedBy == localDeviceID {
+                lastActivityByNodeID[node.id] = now
+            } else {
+                lastActivityByNodeID[node.id] = now
+            }
+        }
+
+        let compaction = compactionsByParentNodeID[node.id]
+        let isExpanded = expandedCompactionNodeIDs.contains(node.id)
+        let displaySummary = compaction.map { entry in
+            if isExpanded {
+                return entry.summary
+            }
+            return Self.truncatedSummary(entry.summary)
+        }
+
+        rows.append(
+            Row(
+                id: node.id,
+                label: node.label,
+                depth: depth,
+                claimedByText: "claimed_by: \(node.claimedBy?.isEmpty == false ? node.claimedBy! : "Available")",
+                compactionDisplayText: displaySummary,
+                isCompactionExpanded: isExpanded
+            )
+        )
+
+        for child in node.children {
+            appendRows(from: child, depth: depth + 1, now: now, into: &rows)
+        }
+    }
+
+    private func collectNodeIDs(in node: TreeNode) -> Set<String> {
+        var nodeIDs: Set<String> = [node.id]
+        for child in node.children {
+            nodeIDs.formUnion(collectNodeIDs(in: child))
+        }
+        return nodeIDs
+    }
+
+    private func resolveSenderNodeID(for message: Message, in tree: TreeNode) -> String? {
+        if TreeHelpers.level(of: message.senderID, in: tree) != nil {
+            return message.senderID
+        }
+        return findNodeID(claimedBy: message.senderID, in: tree)
+    }
+
+    private func resolvedParentNodeID(for message: Message, in tree: TreeNode) -> String? {
+        if let parentID = message.parentID {
+            return parentID
+        }
+        guard let senderNodeID = resolveSenderNodeID(for: message, in: tree) else {
+            return nil
+        }
+        return TreeHelpers.parent(of: senderNodeID, in: tree)?.id
+    }
+
+    private func findNodeID(claimedBy ownerID: String, in tree: TreeNode) -> String? {
+        if tree.claimedBy == ownerID {
+            return tree.id
+        }
+
+        for child in tree.children {
+            if let nodeID = findNodeID(claimedBy: ownerID, in: child) {
+                return nodeID
+            }
+        }
+        return nil
+    }
+
+    private static func truncatedSummary(_ summary: String, maxCharacters: Int = 84) -> String {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxCharacters else {
+            return trimmed
+        }
+
+        let prefix = trimmed.prefix(max(1, maxCharacters - 1))
+        return "\(prefix)…"
+    }
+}
+
+struct TreeView: View {
+    @ObservedObject var viewModel: TreeViewModel
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timelineContext in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if viewModel.rows.isEmpty {
+                        Text("No tree available yet. Join or publish a network first.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        ForEach(viewModel.rows) { row in
+                            TreeNodeStatusRowView(
+                                row: row,
+                                status: viewModel.status(for: row.id, now: timelineContext.date)
+                            ) {
+                                viewModel.toggleCompactionExpansion(for: row.id)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+        .navigationTitle("Tree View")
+        .onAppear {
+            viewModel.refreshFromCurrentTree()
+        }
+        .accessibilityIdentifier("tacnet.tree.root")
+    }
+}
+
+private struct TreeNodeStatusRowView: View {
+    let row: TreeViewModel.Row
+    let status: TreeViewModel.NodeStatus
+    let onToggleCompaction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 10, height: 10)
+                    .accessibilityLabel(Text(status.labelText))
+
+                Text(row.label.isEmpty ? "(unnamed node)" : row.label)
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer(minLength: 8)
+
+                Text(status.labelText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(row.claimedByText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let compactionSummary = row.compactionDisplayText {
+                Button(action: onToggleCompaction) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Compaction Summary")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.orange)
+                        Text(compactionSummary)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(row.isCompactionExpanded ? "Tap to collapse" : "Tap to expand")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.leading, CGFloat(row.depth) * 14)
+        .accessibilityIdentifier("tacnet.tree.row.\(row.id)")
+    }
+}
+
+struct DataFlowView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 42))
+                .foregroundStyle(Color.accentColor)
+            Text("Data Flow")
+                .font(.title3.weight(.semibold))
+            Text("Incoming, processing, and outgoing message telemetry will appear here.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("Data Flow")
+        .accessibilityIdentifier("tacnet.dataflow.root")
+    }
+}
+
+struct SettingsView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "gearshape")
+                .font(.system(size: 42))
+                .foregroundStyle(Color.accentColor)
+            Text("Settings")
+                .font(.title3.weight(.semibold))
+            Text("Role controls and organiser options will appear here.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle("Settings")
+        .accessibilityIdentifier("tacnet.settings.root")
+    }
+}
+
 private struct MainView: View {
     @ObservedObject var viewModel: MainViewModel
     let onBackToRoleSelection: () -> Void
@@ -1305,6 +1750,7 @@ final class AppNetworkCoordinator: ObservableObject {
     let treeSyncService: TreeSyncService
     let roleClaimService: RoleClaimService
     let mainViewModel: MainViewModel
+    let treeViewModel: TreeViewModel
 
     init(
         meshService: BluetoothMeshService = BluetoothMeshService(),
@@ -1324,11 +1770,16 @@ final class AppNetworkCoordinator: ObservableObject {
             roleClaimService: roleClaimService,
             localDeviceID: localDeviceID
         )
+        treeViewModel = TreeViewModel(
+            roleClaimService: roleClaimService,
+            localDeviceID: localDeviceID
+        )
 
         meshService.onMessageReceived = { [weak self] message in
             Task { @MainActor in
                 self?.roleClaimService.handleIncomingMessage(message)
                 self?.mainViewModel.handleIncomingMessage(message)
+                self?.treeViewModel.handleIncomingMessage(message)
             }
         }
 
@@ -1336,6 +1787,7 @@ final class AppNetworkCoordinator: ObservableObject {
             Task { @MainActor in
                 self?.roleClaimService.handlePeerStateChange(peerID: peerID, state: state)
                 self?.mainViewModel.handlePeerConnectionStateChanged(peerID: peerID, state: state)
+                self?.treeViewModel.handlePeerConnectionStateChanged(peerID: peerID, state: state)
             }
         }
     }
