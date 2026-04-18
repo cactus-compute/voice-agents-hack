@@ -2549,7 +2549,7 @@ final class MainViewModel: ObservableObject {
     }
 
     var isPTTDisabled: Bool {
-        pttState == .sending
+        pttState == .sending || !isConnected
     }
 
     var disconnectionMessage: String? {
@@ -2655,6 +2655,14 @@ final class MainViewModel: ObservableObject {
 
     func startPushToTalk() async {
         guard pttState == .idle else {
+            return
+        }
+
+        guard !meshService.connectedPeerIDs.isEmpty else {
+            NSLog("[PTT] ❌ Rejected — disconnected from mesh (0 connected peers)")
+            pttState = .idle
+            errorMessage = Self.disconnectedErrorText
+            isConnected = false
             return
         }
 
