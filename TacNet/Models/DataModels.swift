@@ -151,6 +151,7 @@ struct Message: Codable, Equatable, Sendable {
         var targetNodeID: String?
         var rejectionReason: String?
         var tree: TreeNode?
+        var networkVersion: Int?
 
         enum CodingKeys: String, CodingKey {
             case location
@@ -161,6 +162,7 @@ struct Message: Codable, Equatable, Sendable {
             case targetNodeID = "target_node_id"
             case rejectionReason = "rejection_reason"
             case tree
+            case networkVersion = "network_version"
         }
     }
 
@@ -204,6 +206,7 @@ struct Message: Codable, Equatable, Sendable {
         targetNodeID: String? = nil,
         rejectionReason: String? = nil,
         tree: TreeNode? = nil,
+        networkVersion: Int? = nil,
         timestamp: Date = Date()
     ) -> Message {
         Message(
@@ -223,7 +226,8 @@ struct Message: Codable, Equatable, Sendable {
                 claimedNodeID: claimedNodeID,
                 targetNodeID: targetNodeID,
                 rejectionReason: rejectionReason,
-                tree: tree
+                tree: tree,
+                networkVersion: networkVersion
             )
         )
     }

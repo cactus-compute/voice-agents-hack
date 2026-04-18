@@ -826,10 +826,15 @@ final class TreeSyncService: ObservableObject {
             return .ignoredStale(localVersion: localConfig.version, incomingVersion: incoming.version)
         }
 
-        self.localConfig = incoming
+        var mergedIncoming = incoming
+        mergedIncoming.tree = Self.treeByPreservingClaims(
+            from: localConfig.tree,
+            into: incoming.tree
+        )
+        self.localConfig = mergedIncoming
         return .replacedWithHigherVersion(
             previousVersion: localConfig.version,
-            appliedVersion: incoming.version
+            appliedVersion: mergedIncoming.version
         )
     }
 
@@ -863,6 +868,41 @@ final class TreeSyncService: ObservableObject {
 
         localConfig = remoteConfig
         return remoteConfig
+    }
+
+    private static func treeByPreservingClaims(from localTree: TreeNode, into incomingTree: TreeNode) -> TreeNode {
+        var mergedTree = incomingTree
+        let localClaims = claimedNodeMap(in: localTree)
+        applyClaims(localClaims, to: &mergedTree)
+        return mergedTree
+    }
+
+    private static func claimedNodeMap(in tree: TreeNode) -> [String: String] {
+        var claims: [String: String] = [:]
+        collectClaims(in: tree, into: &claims)
+        return claims
+    }
+
+    private static func collectClaims(in tree: TreeNode, into claims: inout [String: String]) {
+        if let owner = tree.claimedBy, !owner.isEmpty {
+            claims[tree.id] = owner
+        }
+
+        for child in tree.children {
+            collectClaims(in: child, into: &claims)
+        }
+    }
+
+    private static func applyClaims(_ localClaims: [String: String], to tree: inout TreeNode) {
+        if (tree.claimedBy == nil || tree.claimedBy?.isEmpty == true),
+           let preservedClaim = localClaims[tree.id],
+           !preservedClaim.isEmpty {
+            tree.claimedBy = preservedClaim
+        }
+
+        for index in tree.children.indices {
+            applyClaims(localClaims, to: &tree.children[index])
+        }
     }
 }
 
@@ -963,6 +1003,8 @@ final class RoleClaimService: ObservableObject {
     @Published private(set) var activeClaimNodeID: String?
     @Published private(set) var lastClaimRejection: ClaimRejectionReason?
     @Published private(set) var networkConfig: NetworkConfig?
+    @Published private(set) var requiresRoleReselection = false
+    @Published private(set) var roleReselectionNotification: String?
 
     private let meshService: BluetoothMeshService
     private let treeSyncService: TreeSyncService
@@ -1022,7 +1064,7 @@ final class RoleClaimService: ObservableObject {
                     return .unavailable
                 }
 
-                treeSyncService.setLocalConfig(config)
+                applyUpdatedConfig(config)
                 publishClaim(nodeID: nodeID, claimantID: localDeviceID, in: config)
                 publishClaimRejected(
                     nodeID: nodeID,
@@ -1031,6 +1073,7 @@ final class RoleClaimService: ObservableObject {
                     in: config
                 )
                 lastClaimRejection = nil
+                clearRoleReselectionState()
                 return .claimed(nodeID: nodeID)
             }
 
@@ -1042,9 +1085,10 @@ final class RoleClaimService: ObservableObject {
             return .unavailable
         }
 
-        treeSyncService.setLocalConfig(config)
+        applyUpdatedConfig(config)
         publishClaim(nodeID: nodeID, claimantID: localDeviceID, in: config)
         lastClaimRejection = nil
+        clearRoleReselectionState()
         return .claimed(nodeID: nodeID)
     }
 
@@ -1061,9 +1105,10 @@ final class RoleClaimService: ObservableObject {
             return .noActiveClaim
         }
 
-        treeSyncService.setLocalConfig(config)
+        applyUpdatedConfig(config)
         publishRelease(nodeID: claimedNodeID, releasedBy: localDeviceID, in: config)
         lastClaimRejection = nil
+        clearRoleReselectionState()
         return .released(nodeID: claimedNodeID)
     }
 
@@ -1081,12 +1126,140 @@ final class RoleClaimService: ObservableObject {
         }
     }
 
+    @discardableResult
+    func addNode(parentID: String, label: String) -> TreeNode? {
+        guard isOrganiser, var config = networkConfig else {
+            return nil
+        }
+
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty else {
+            return nil
+        }
+
+        guard let createdNode = insertChild(parentID: parentID, label: trimmedLabel, in: &config.tree) else {
+            return nil
+        }
+
+        config.version += 1
+        applyUpdatedConfig(config)
+        publishTreeUpdate(changedNodeID: createdNode.id, in: config)
+        return createdNode
+    }
+
+    @discardableResult
+    func removeNode(nodeID: String) -> Bool {
+        guard isOrganiser, var config = networkConfig else {
+            return false
+        }
+
+        guard nodeID != config.tree.id else {
+            return false
+        }
+
+        guard removeTreeNode(nodeID: nodeID, from: &config.tree) != nil else {
+            return false
+        }
+
+        config.version += 1
+        applyUpdatedConfig(config)
+        publishTreeUpdate(changedNodeID: nil, in: config)
+        return true
+    }
+
+    @discardableResult
+    func renameNode(nodeID: String, newLabel: String) -> Bool {
+        guard isOrganiser, var config = networkConfig else {
+            return false
+        }
+
+        let trimmedLabel = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty else {
+            return false
+        }
+
+        guard renameTreeNode(nodeID: nodeID, newLabel: trimmedLabel, in: &config.tree) else {
+            return false
+        }
+
+        config.version += 1
+        applyUpdatedConfig(config)
+        publishTreeUpdate(changedNodeID: nodeID, in: config)
+        return true
+    }
+
+    @discardableResult
+    func moveNode(nodeID: String, newParentID: String) -> Bool {
+        guard isOrganiser, var config = networkConfig else {
+            return false
+        }
+
+        guard nodeID != config.tree.id, nodeID != newParentID else {
+            return false
+        }
+
+        guard let nodeToMove = findNode(withID: nodeID, in: config.tree),
+              findNode(withID: newParentID, in: config.tree) != nil,
+              !treeContainsNode(withID: newParentID, in: nodeToMove) else {
+            return false
+        }
+
+        let originalParentID = TreeHelpers.parent(of: nodeID, in: config.tree)?.id
+        guard let detachedNode = removeTreeNode(nodeID: nodeID, from: &config.tree) else {
+            return false
+        }
+
+        guard appendChild(detachedNode, toParentID: newParentID, in: &config.tree) else {
+            if let originalParentID {
+                _ = appendChild(detachedNode, toParentID: originalParentID, in: &config.tree)
+            }
+            return false
+        }
+
+        config.version += 1
+        applyUpdatedConfig(config)
+        publishTreeUpdate(changedNodeID: nodeID, in: config)
+        return true
+    }
+
+    @discardableResult
+    func promote(nodeID: String) -> Bool {
+        guard isOrganiser, var config = networkConfig else {
+            return false
+        }
+
+        guard let targetNode = findNode(withID: nodeID, in: config.tree),
+              let promotedDeviceID = targetNode.claimedBy,
+              !promotedDeviceID.isEmpty else {
+            return false
+        }
+
+        let senderRoleAtPromotion = senderRole(for: localDeviceID, in: config)
+        guard config.createdBy != promotedDeviceID else {
+            return false
+        }
+
+        config.createdBy = promotedDeviceID
+        config.version += 1
+        applyUpdatedConfig(config)
+        publishPromote(
+            nodeID: nodeID,
+            senderRole: senderRoleAtPromotion,
+            in: config
+        )
+        return true
+    }
+
     func handleIncomingMessage(_ message: Message) {
         switch message.type {
         case .claim:
             handleIncomingClaim(message)
         case .release:
             handleIncomingRelease(message)
+        case .treeUpdate:
+            handleIncomingTreeUpdate(message)
+        case .promote:
+            handleIncomingPromote(message)
         case .claimRejected:
             handleIncomingClaimRejected(message)
         default:
@@ -1136,7 +1309,7 @@ final class RoleClaimService: ObservableObject {
             guard updateClaim(nodeID: nodeID, claimedBy: senderID, in: &config.tree) else {
                 return
             }
-            treeSyncService.setLocalConfig(config)
+            applyUpdatedConfig(config)
             return
         }
 
@@ -1148,7 +1321,7 @@ final class RoleClaimService: ObservableObject {
             guard updateClaim(nodeID: nodeID, claimedBy: senderID, in: &config.tree) else {
                 return
             }
-            treeSyncService.setLocalConfig(config)
+            applyUpdatedConfig(config)
             return
         }
 
@@ -1194,7 +1367,57 @@ final class RoleClaimService: ObservableObject {
         guard updateClaim(nodeID: nodeID, claimedBy: nil, in: &config.tree) else {
             return
         }
-        treeSyncService.setLocalConfig(config)
+        applyUpdatedConfig(config)
+    }
+
+    private func handleIncomingTreeUpdate(_ message: Message) {
+        guard let incomingTree = message.payload.tree,
+              let incomingVersion = message.payload.networkVersion,
+              var incomingConfig = networkConfig else {
+            return
+        }
+
+        let previouslyClaimedNodeID = activeClaimNodeID
+        incomingConfig.tree = incomingTree
+        incomingConfig.version = incomingVersion
+
+        _ = treeSyncService.converge(with: incomingConfig)
+
+        guard let appliedConfig = treeSyncService.localConfig else {
+            return
+        }
+
+        applyLocalConfigSnapshot(appliedConfig)
+
+        guard let previouslyClaimedNodeID,
+              findNode(withID: previouslyClaimedNodeID, in: appliedConfig.tree) == nil else {
+            return
+        }
+
+        activeClaimNodeID = nil
+        lastClaimRejection = .nodeNotFound
+        requiresRoleReselection = true
+        roleReselectionNotification = "Your claimed role was removed from the tree."
+    }
+
+    private func handleIncomingPromote(_ message: Message) {
+        guard let targetNodeID = message.payload.targetNodeID,
+              let promotedVersion = message.payload.networkVersion,
+              var config = networkConfig,
+              let targetNode = findNode(withID: targetNodeID, in: config.tree),
+              let promotedDeviceID = targetNode.claimedBy,
+              !promotedDeviceID.isEmpty else {
+            return
+        }
+
+        let currentVersion = config.version
+        guard promotedVersion > currentVersion else {
+            return
+        }
+
+        config.createdBy = promotedDeviceID
+        config.version = promotedVersion
+        applyUpdatedConfig(config)
     }
 
     private func handleIncomingClaimRejected(_ message: Message) {
@@ -1221,7 +1444,7 @@ final class RoleClaimService: ObservableObject {
         guard updateClaim(nodeID: nodeID, claimedBy: nil, in: &config.tree) else {
             return
         }
-        treeSyncService.setLocalConfig(config)
+        applyUpdatedConfig(config)
     }
 
     private func scheduleDisconnectAutoRelease(for peerID: UUID) {
@@ -1242,7 +1465,7 @@ final class RoleClaimService: ObservableObject {
             guard !Task.isCancelled else {
                 return
             }
-            await self.performDisconnectAutoReleaseIfNeeded(for: peerID)
+            self.performDisconnectAutoReleaseIfNeeded(for: peerID)
         }
     }
 
@@ -1272,7 +1495,7 @@ final class RoleClaimService: ObservableObject {
             publishRelease(nodeID: nodeID, releasedBy: disconnectedOwnerID, in: config)
         }
 
-        treeSyncService.setLocalConfig(config)
+        applyUpdatedConfig(config)
     }
 
     private func publishClaim(nodeID: String, claimantID: String, in config: NetworkConfig) {
@@ -1333,6 +1556,46 @@ final class RoleClaimService: ObservableObject {
         meshService.publish(rejectedMessage)
     }
 
+    private func publishTreeUpdate(changedNodeID: String?, in config: NetworkConfig) {
+        let parentID = changedNodeID.flatMap { TreeHelpers.parent(of: $0, in: config.tree)?.id }
+        let treeLevel = changedNodeID.flatMap { TreeHelpers.level(of: $0, in: config.tree) } ?? 0
+        let treeUpdate = Message.make(
+            type: .treeUpdate,
+            senderID: localDeviceID,
+            senderRole: senderRole(for: localDeviceID, in: config),
+            parentID: parentID,
+            treeLevel: treeLevel,
+            ttl: defaultTTL,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            tree: config.tree,
+            networkVersion: config.version
+        )
+        meshService.publish(treeUpdate)
+    }
+
+    private func publishPromote(nodeID: String, senderRole: String, in config: NetworkConfig) {
+        let parentID = TreeHelpers.parent(of: nodeID, in: config.tree)?.id
+        let treeLevel = TreeHelpers.level(of: nodeID, in: config.tree) ?? 0
+        let promoteMessage = Message.make(
+            type: .promote,
+            senderID: localDeviceID,
+            senderRole: senderRole,
+            parentID: parentID,
+            treeLevel: treeLevel,
+            ttl: defaultTTL,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            targetNodeID: nodeID,
+            networkVersion: config.version
+        )
+        meshService.publish(promoteMessage)
+    }
+
     private func senderRole(for senderID: String, in config: NetworkConfig) -> String {
         senderID == config.createdBy ? "organiser" : "participant"
     }
@@ -1344,6 +1607,102 @@ final class RoleClaimService: ObservableObject {
             return
         }
         activeClaimNodeID = firstClaimedNodeID(by: localDeviceID, in: config.tree)
+        if activeClaimNodeID != nil {
+            clearRoleReselectionState()
+        }
+    }
+
+    private func applyUpdatedConfig(_ config: NetworkConfig) {
+        treeSyncService.setLocalConfig(config)
+        applyLocalConfigSnapshot(config)
+    }
+
+    private func clearRoleReselectionState() {
+        requiresRoleReselection = false
+        roleReselectionNotification = nil
+    }
+
+    @discardableResult
+    private func insertChild(parentID: String, label: String, in tree: inout TreeNode) -> TreeNode? {
+        if tree.id == parentID {
+            let createdNode = TreeNode(
+                id: UUID().uuidString,
+                label: label,
+                claimedBy: nil,
+                children: []
+            )
+            tree.children.append(createdNode)
+            return createdNode
+        }
+
+        for index in tree.children.indices {
+            if let createdNode = insertChild(parentID: parentID, label: label, in: &tree.children[index]) {
+                return createdNode
+            }
+        }
+
+        return nil
+    }
+
+    @discardableResult
+    private func removeTreeNode(nodeID: String, from tree: inout TreeNode) -> TreeNode? {
+        if let index = tree.children.firstIndex(where: { $0.id == nodeID }) {
+            return tree.children.remove(at: index)
+        }
+
+        for index in tree.children.indices {
+            if let removed = removeTreeNode(nodeID: nodeID, from: &tree.children[index]) {
+                return removed
+            }
+        }
+
+        return nil
+    }
+
+    @discardableResult
+    private func renameTreeNode(nodeID: String, newLabel: String, in tree: inout TreeNode) -> Bool {
+        if tree.id == nodeID {
+            tree.label = newLabel
+            return true
+        }
+
+        for index in tree.children.indices {
+            if renameTreeNode(nodeID: nodeID, newLabel: newLabel, in: &tree.children[index]) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    @discardableResult
+    private func appendChild(_ child: TreeNode, toParentID parentID: String, in tree: inout TreeNode) -> Bool {
+        if tree.id == parentID {
+            tree.children.append(child)
+            return true
+        }
+
+        for index in tree.children.indices {
+            if appendChild(child, toParentID: parentID, in: &tree.children[index]) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func treeContainsNode(withID nodeID: String, in tree: TreeNode) -> Bool {
+        if tree.id == nodeID {
+            return true
+        }
+
+        for child in tree.children {
+            if treeContainsNode(withID: nodeID, in: child) {
+                return true
+            }
+        }
+
+        return false
     }
 
     private func findNode(withID nodeID: String, in tree: TreeNode) -> TreeNode? {

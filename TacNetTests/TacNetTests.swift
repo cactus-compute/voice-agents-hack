@@ -1113,6 +1113,246 @@ final class TacNetTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testRoleClaimServiceLiveAddBroadcastsTreeUpdateWithIncrementedVersion() throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService)
+        let forwardingPeer = UUID(uuidString: "0E0E0E0E-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000005")!
+        var config = makeNetworkConfig(networkID: networkID, version: 7, rootLabel: "Role Tree")
+        config.createdBy = "organiser-device"
+        syncService.setLocalConfig(config)
+
+        let roleService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: syncService,
+            localDeviceID: "organiser-device",
+            disconnectTimeout: 60
+        )
+
+        let startingVersion = try XCTUnwrap(syncService.localConfig?.version)
+        let createdNode = roleService.addNode(parentID: "root", label: "Delta")
+        let createdNodeID = try XCTUnwrap(createdNode?.id)
+
+        let updatedConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(updatedConfig.version, startingVersion + 1)
+        XCTAssertEqual(findNode(nodeID: createdNodeID, in: updatedConfig.tree)?.label, "Delta")
+
+        XCTAssertEqual(transport.sentPackets.count, 1)
+        let treeUpdate = try decodeMessage(from: transport.sentPackets[0].data)
+        XCTAssertEqual(treeUpdate.type, .treeUpdate)
+        XCTAssertEqual(treeUpdate.payload.networkVersion, startingVersion + 1)
+        XCTAssertEqual(findNode(nodeID: createdNodeID, in: try XCTUnwrap(treeUpdate.payload.tree))?.label, "Delta")
+    }
+
+    @MainActor
+    func testRoleClaimServiceLiveRemoveClaimedNodeKicksClaimantWithNotification() throws {
+        let organiserTransport = MockBluetoothMeshTransport()
+        let organiserMesh = BluetoothMeshService(transport: organiserTransport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let organiserSync = TreeSyncService(meshService: organiserMesh)
+        let forwardingPeer = UUID(uuidString: "0F0F0F0F-0000-0000-0000-000000000001")!
+        organiserTransport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000006")!
+        var config = makeNetworkConfig(networkID: networkID, version: 8, rootLabel: "Role Tree")
+        config.createdBy = "organiser-device"
+        config = withClaim(nodeID: "alpha", claimedBy: "participant-device", in: config)
+        organiserSync.setLocalConfig(config)
+
+        let organiserService = RoleClaimService(
+            meshService: organiserMesh,
+            treeSyncService: organiserSync,
+            localDeviceID: "organiser-device",
+            disconnectTimeout: 60
+        )
+
+        let participantTransport = MockBluetoothMeshTransport()
+        let participantMesh = BluetoothMeshService(transport: participantTransport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let participantSync = TreeSyncService(meshService: participantMesh)
+        participantSync.setLocalConfig(config)
+        let participantService = RoleClaimService(
+            meshService: participantMesh,
+            treeSyncService: participantSync,
+            localDeviceID: "participant-device",
+            disconnectTimeout: 60
+        )
+
+        XCTAssertEqual(participantService.activeClaimNodeID, "alpha")
+        XCTAssertTrue(organiserService.removeNode(nodeID: "alpha"))
+
+        XCTAssertNil(claimedByValue(nodeID: "alpha", in: organiserSync.localConfig))
+        XCTAssertEqual(organiserTransport.sentPackets.count, 1)
+
+        let treeUpdate = try decodeMessage(from: organiserTransport.sentPackets[0].data)
+        XCTAssertEqual(treeUpdate.type, .treeUpdate)
+        participantService.handleIncomingMessage(treeUpdate)
+
+        XCTAssertNil(participantService.activeClaimNodeID)
+        XCTAssertTrue(participantService.requiresRoleReselection)
+        XCTAssertEqual(participantService.roleReselectionNotification, "Your claimed role was removed from the tree.")
+        XCTAssertEqual(participantService.lastClaimRejection, .nodeNotFound)
+    }
+
+    @MainActor
+    func testRoleClaimServiceLiveRenameBroadcastsTreeUpdateAndPreservesUnchangedClaims() throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService)
+        let forwardingPeer = UUID(uuidString: "10101010-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000007")!
+        var config = makeNetworkConfig(networkID: networkID, version: 9, rootLabel: "Role Tree")
+        config.createdBy = "organiser-device"
+        syncService.setLocalConfig(config)
+
+        let roleService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: syncService,
+            localDeviceID: "organiser-device",
+            disconnectTimeout: 60
+        )
+
+        XCTAssertTrue(roleService.renameNode(nodeID: "alpha", newLabel: "Alpha Prime"))
+
+        let updatedConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(findNode(nodeID: "alpha", in: updatedConfig.tree)?.label, "Alpha Prime")
+        XCTAssertEqual(claimedByValue(nodeID: "bravo", in: updatedConfig), "claimed-device")
+
+        XCTAssertEqual(transport.sentPackets.count, 1)
+        let treeUpdate = try decodeMessage(from: transport.sentPackets[0].data)
+        XCTAssertEqual(treeUpdate.type, .treeUpdate)
+    }
+
+    @MainActor
+    func testRoleClaimServiceLiveMoveBroadcastsTreeUpdateAndPreservesMovedNodeClaim() throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService)
+        let forwardingPeer = UUID(uuidString: "11111111-0000-0000-0000-000000000001")!
+        transport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000008")!
+        var config = makeNetworkConfig(networkID: networkID, version: 10, rootLabel: "Role Tree")
+        config.createdBy = "organiser-device"
+        config = withClaim(nodeID: "alpha", claimedBy: "moved-device", in: config)
+        syncService.setLocalConfig(config)
+
+        let roleService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: syncService,
+            localDeviceID: "organiser-device",
+            disconnectTimeout: 60
+        )
+
+        XCTAssertTrue(roleService.moveNode(nodeID: "alpha", newParentID: "bravo"))
+
+        let updatedConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(TreeHelpers.parent(of: "alpha", in: updatedConfig.tree)?.id, "bravo")
+        XCTAssertEqual(claimedByValue(nodeID: "alpha", in: updatedConfig), "moved-device")
+
+        XCTAssertEqual(transport.sentPackets.count, 1)
+        let treeUpdate = try decodeMessage(from: transport.sentPackets[0].data)
+        XCTAssertEqual(treeUpdate.type, .treeUpdate)
+        XCTAssertEqual(TreeHelpers.parent(of: "alpha", in: try XCTUnwrap(treeUpdate.payload.tree))?.id, "bravo")
+    }
+
+    @MainActor
+    func testRoleClaimServiceTreeUpdatePreservesExistingClaimsWhenIncomingTreeOmitsThem() throws {
+        let transport = MockBluetoothMeshTransport()
+        let meshService = BluetoothMeshService(transport: transport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let syncService = TreeSyncService(meshService: meshService)
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-000000000009")!
+        var config = makeNetworkConfig(networkID: networkID, version: 11, rootLabel: "Role Tree")
+        config.createdBy = "organiser-device"
+        config = withClaim(nodeID: "alpha", claimedBy: "participant-device", in: config)
+        syncService.setLocalConfig(config)
+
+        let roleService = RoleClaimService(
+            meshService: meshService,
+            treeSyncService: syncService,
+            localDeviceID: "participant-device",
+            disconnectTimeout: 60
+        )
+
+        var incomingTree = config.tree
+        _ = mutateClaim(nodeID: "alpha", claimedBy: nil, in: &incomingTree)
+        incomingTree.children.append(TreeNode(id: "charlie", label: "Charlie", claimedBy: nil, children: []))
+
+        let treeUpdate = Message.make(
+            type: .treeUpdate,
+            senderID: "organiser-device",
+            senderRole: "organiser",
+            parentID: "root",
+            treeLevel: 0,
+            ttl: 8,
+            encrypted: false,
+            latitude: nil,
+            longitude: nil,
+            accuracy: nil,
+            tree: incomingTree,
+            networkVersion: config.version + 1
+        )
+
+        roleService.handleIncomingMessage(treeUpdate)
+
+        let updatedConfig = try XCTUnwrap(syncService.localConfig)
+        XCTAssertEqual(claimedByValue(nodeID: "alpha", in: updatedConfig), "participant-device")
+        XCTAssertNotNil(findNode(nodeID: "charlie", in: updatedConfig.tree))
+    }
+
+    @MainActor
+    func testRoleClaimServicePromoteTransfersOrganiserPermissionsAtomically() throws {
+        let organiserTransport = MockBluetoothMeshTransport()
+        let organiserMesh = BluetoothMeshService(transport: organiserTransport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let organiserSync = TreeSyncService(meshService: organiserMesh)
+        let forwardingPeer = UUID(uuidString: "12121212-0000-0000-0000-000000000001")!
+        organiserTransport.emit(.connectionStateChanged(forwardingPeer, .connected))
+
+        let networkID = UUID(uuidString: "CCCCCCCC-DDDD-EEEE-FFFF-00000000000A")!
+        var config = makeNetworkConfig(networkID: networkID, version: 12, rootLabel: "Role Tree")
+        config.createdBy = "old-organiser-device"
+        config = withClaim(nodeID: "alpha", claimedBy: "new-organiser-device", in: config)
+        organiserSync.setLocalConfig(config)
+
+        let organiserService = RoleClaimService(
+            meshService: organiserMesh,
+            treeSyncService: organiserSync,
+            localDeviceID: "old-organiser-device",
+            disconnectTimeout: 60
+        )
+
+        XCTAssertTrue(organiserService.promote(nodeID: "alpha"))
+        XCTAssertFalse(organiserService.isOrganiser)
+        XCTAssertEqual(organiserSync.localConfig?.createdBy, "new-organiser-device")
+
+        XCTAssertEqual(organiserTransport.sentPackets.count, 1)
+        let promoteMessage = try decodeMessage(from: organiserTransport.sentPackets[0].data)
+        XCTAssertEqual(promoteMessage.type, .promote)
+        XCTAssertEqual(promoteMessage.payload.targetNodeID, "alpha")
+        XCTAssertEqual(promoteMessage.payload.networkVersion, config.version + 1)
+
+        let promotedTransport = MockBluetoothMeshTransport()
+        let promotedMesh = BluetoothMeshService(transport: promotedTransport, deduplicator: MessageDeduplicator(capacity: 1_000))
+        let promotedSync = TreeSyncService(meshService: promotedMesh)
+        promotedSync.setLocalConfig(config)
+        let promotedService = RoleClaimService(
+            meshService: promotedMesh,
+            treeSyncService: promotedSync,
+            localDeviceID: "new-organiser-device",
+            disconnectTimeout: 60
+        )
+
+        promotedService.handleIncomingMessage(promoteMessage)
+
+        XCTAssertEqual(promotedSync.localConfig?.createdBy, "new-organiser-device")
+        XCTAssertTrue(promotedService.isOrganiser)
+    }
+
     private func makeMeshMessage(
         id: UUID = UUID(),
         ttl: Int,
