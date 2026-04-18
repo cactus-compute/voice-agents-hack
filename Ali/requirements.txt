@@ -25,6 +25,10 @@ playwright>=1.44.0
 # macOS menu bar
 rumps>=0.4.0
 
+# Modern desktop UI (replaces tkinter overlay)
+PySide6>=6.8.0
+websockets>=12.0
+
 # ── Cactus SDK ────────────────────────────────────────────────────────────────
 # Cactus is NOT a pip package. Install it separately:
 #
