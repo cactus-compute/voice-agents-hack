@@ -1,0 +1,58 @@
+{
+  "milestone": "ptt-gesture-fix",
+  "round": 1,
+  "status": "fail",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (TacNetUITests) and xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "xcodebuild build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (non-upstream warning check from /tmp/ptt-gesture-fix-clean-build.log: ': warning:' lines excluding 'cactus.framework' = 0)",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "failedFeatures": [
+      "fix-ptt-button-gesture-dispatch"
+    ]
+  },
+  "blockingIssues": [
+    {
+      "featureId": "fix-ptt-button-gesture-dispatch",
+      "severity": "blocking",
+      "description": "TacNetUITests regression tests launch --ui-test-route=main-ptt and bypass the real Main tab (TabView + NavigationStack), so they do not verify dispatch into MainViewModel.startPushToTalk()/stopPushToTalk() on the production integration path."
+    },
+    {
+      "featureId": "fix-ptt-button-gesture-dispatch",
+      "severity": "blocking",
+      "description": "testPTTButtonGestureDoesNotProduceGestureGateTimeout does not assert required console evidence ([PTT] log present and absence of 'Gesture: System gesture gate timed out'), relying instead on local counter proxies."
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/ios-worker/SKILL.md",
+      "suggestion": "Clarify scrutiny expectations that tests-first/TDD compliance must be evidenced in transcript order when workers mark followedProcedure=true.",
+      "evidence": "Reviewer observed implementation edits preceding new regression tests in worker-transcripts while the handoff marked followedProcedure=true.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Update .factory/library/ui-tests.md for new main-ptt route and pttButton selector.",
+      "reason": "deferred documentation change; not applied during this scrutiny run"
+    }
+  ],
+  "previousRound": null
+}

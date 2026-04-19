@@ -1,0 +1,450 @@
+{
+  "groupId": "ui-regression",
+  "testedAt": "2026-04-18T08:00:09Z",
+  "isolation": {
+    "lane": "single-validator",
+    "simulator": "iPhone 17 (platform=iOS Simulator,name=iPhone 17,OS=latest)",
+    "missionDir": "/Users/lucaspfingstenplanells/.factory/missions/68f59012-fcda-4f36-a993-558e770a5762",
+    "evidenceRoot": "test-and-fix/ui-regression",
+    "productLogicEdits": "none"
+  },
+  "toolsUsed": [
+    "xcodebuild test",
+    "xcodebuild clean build",
+    "xcrun simctl",
+    "xcrun xcresulttool",
+    "python3 (log/assertion analysis)"
+  ],
+  "commandsRun": [
+    {
+      "command": "xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination \"platform=iOS Simulator,name=iPhone 17,OS=latest\"",
+      "exitCode": 0,
+      "log": "test-and-fix/ui-regression/val-reg-002-build.log"
+    },
+    {
+      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination \"platform=iOS Simulator,name=iPhone 17,OS=latest\" -resultBundlePath test-and-fix/ui-regression/val-reg-002-full-tests.xcresult",
+      "exitCode": 0,
+      "log": "test-and-fix/ui-regression/val-reg-002-full-test.log"
+    },
+    {
+      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination \"platform=iOS Simulator,name=iPhone 17,OS=latest\" -only-testing:TacNetUITests -resultBundlePath test-and-fix/ui-regression/ui-smoke-tests.xcresult",
+      "exitCode": 0,
+      "log": "test-and-fix/ui-regression/ui-smoke-test.log"
+    },
+    {
+      "command": "xcrun xcresulttool export attachments --path test-and-fix/ui-regression/ui-smoke-tests.xcresult --output-path test-and-fix/ui-regression/ui-smoke-attachments",
+      "exitCode": 0,
+      "log": "test-and-fix/ui-regression/ui-smoke-attachments/manifest.json"
+    },
+    {
+      "command": "simctl lifecycle sequence (boot/install/launch/screenshot/terminate/shutdown) scripted via python",
+      "exitCode": 0,
+      "log": "test-and-fix/ui-regression/simctl-sequence-second-run.json"
+    }
+  ],
+  "consoleRedFlagCheck": {
+    "strings": [
+      "Fatal error:",
+      "Thread 1: EXC_",
+      "SIGABRT",
+      "Modifying state during view update",
+      "AttributeGraph: cycle detected",
+      "Unhandled error",
+      "Invalid frame dimension"
+    ],
+    "result": "pass",
+    "detailsFile": "test-and-fix/ui-regression/console-redflag-check.json"
+  },
+  "assertions": [
+    {
+      "id": "VAL-UI-001",
+      "title": "App launches in Simulator without crashing",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Boot iPhone 17 simulator and install TacNet.app with simctl",
+          "expected": "Install succeeds",
+          "observed": "Install succeeded (exit 0)."
+        },
+        {
+          "action": "Launch com.tacnet.app with --ui-test-skip-download and wait 15s",
+          "expected": "App remains alive with rendered UI",
+          "observed": "Launch succeeded; terminate-after-wait returned exit 0 (process alive after 15s)."
+        },
+        {
+          "action": "Capture screenshot at t=5s",
+          "expected": "Non-blank rendered UI screenshot captured",
+          "observed": "Screenshot captured successfully."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/VAL-UI-001-launch-t5-second-run.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/launch-welcome_0_E9DD07A0-C739-457D-9F1E-5B293014390A.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/launch-after-15s_0_1223C478-5CDF-4313-9ECF-6D3ED608F9B8.png"
+        ],
+        "consoleErrors": "none of required red-flag strings; see test-and-fix/ui-regression/VAL-UI-001-simctl-console-second-run.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A (no API network assertions for launch smoke)",
+        "processAliveProof": "test-and-fix/ui-regression/simctl-sequence-second-run.json"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-002",
+      "title": "Initial screen renders appropriately for bootstrap state",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run UI smoke test for bootstrap download gate fixture",
+          "expected": "Download gate renders with progress/gating copy and no blank state",
+          "observed": "Gate UI rendered; test passed."
+        },
+        {
+          "action": "Run UI smoke test with --ui-test-skip-download",
+          "expected": "Welcome screen renders with affordances",
+          "observed": "Welcome screen rendered; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/download-gate-initial_0_ADDAEBB8-73CB-4AA6-B02D-12EB11020669.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/download-gate-after-10s_0_25697431-7E67-4113-8D61-615FE9D5D37D.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/initial-welcome_0_A0C4DC91-5680-4E07-8E98-0A8B33437908.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-003",
+      "title": "Welcome / onboarding screen renders with Create and Join affordances",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Open welcome screen in UI smoke",
+          "expected": "Create and Join buttons visible",
+          "observed": "Both affordances present and tappable."
+        },
+        {
+          "action": "Tap Create then navigate back and tap Join",
+          "expected": "Reach Tree Builder then Network Scan without crash",
+          "observed": "Both navigations succeeded; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/initial-welcome_0_A0C4DC91-5680-4E07-8E98-0A8B33437908.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/create-network-treebuilder_0_39B2A642-3759-455D-BAF5-C857EFFCC2D8.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/join-network-scan_0_5B0BC7F7-A832-45BF-9A33-CA50859536A4.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-004",
+      "title": "Tree Builder (organiser) \u2014 add/rename/remove flow without crash",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Navigate to Tree Builder from Welcome",
+          "expected": "Tree Builder renders",
+          "observed": "Rendered successfully."
+        },
+        {
+          "action": "Add child node Alpha, rename to Bravo, then remove",
+          "expected": "UI updates after each action without crash",
+          "observed": "All actions succeeded and UI updated; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/treebuilder-empty_0_68E9953E-93F1-46DA-82F8-A69411BC37A9.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/treebuilder-after-add_0_8464BFFA-6713-4E4F-A2CE-0E8652EE958E.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/treebuilder-after-rename_0_2C6CBA73-DFB6-47DE-A0BA-10B2B63CFA37.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/treebuilder-after-remove_0_0638E1BE-FD5E-41F3-B984-72B238A1D07E.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-005",
+      "title": "Network Scan screen renders even when no networks are discoverable",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Navigate Welcome -> Join Network",
+          "expected": "Network Scan view renders in simulator",
+          "observed": "Scan view rendered."
+        },
+        {
+          "action": "Observe empty/rescan state",
+          "expected": "No crash/hang in no-BLE simulator context",
+          "observed": "Empty state and rescan interaction completed; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/scan-empty_0_852CE598-76CE-4005-A83E-5E6490085D69.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/scan-after-rescan_0_D710BE5F-7D9B-4AA9-B5F8-C24A18837CEA.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-006",
+      "title": "PIN entry screen renders and accepts input",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Launch UI host route pin-entry",
+          "expected": "PIN entry view renders",
+          "observed": "PIN field rendered."
+        },
+        {
+          "action": "Enter 4 digits and submit",
+          "expected": "Input accepted and submission observed",
+          "observed": "Submitted value indicator rendered; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/pin-entry_0_FCE26249-1AAB-4125-A8D5-460FD727763C.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/pin-entry-submitted_0_F5B3FBBF-F0ED-4675-A00E-2FD71E2988B4.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-007",
+      "title": "Role Selection screen renders tree hierarchy with claim controls",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Seed network in UI smoke helper and publish tree",
+          "expected": "Role selection screen appears",
+          "observed": "Role selection rendered."
+        },
+        {
+          "action": "Verify seeded node and claim control availability",
+          "expected": "Seeded hierarchy visible and claim path operable",
+          "observed": "Alpha node shown; flow progressed to claim step in tab test."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/role-selection_0_74E5CC16-289F-4772-99DC-8CAC76F251D9.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/after-claim-tap_0_5DC77A7D-2E4D-4D46-9BF9-20174F2DC588.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-008",
+      "title": "Main tab renders live feed and PTT button responds",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Reach main tab after seeded claim",
+          "expected": "Main view and PTT control render",
+          "observed": "Main root and PTT control found."
+        },
+        {
+          "action": "Press-and-hold PTT control",
+          "expected": "Interaction completes without freeze/crash",
+          "observed": "Hold action succeeded; app stayed foreground."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-main_0_28CC2BD7-B0C0-44F7-A162-F669C8CE41FC.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-main-after-ptt_0_AE7FE5D7-AC34-473A-B2CB-A48FA9AEEF86.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-009",
+      "title": "Tree tab renders hierarchy with status indicators",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Switch to Tree View tab",
+          "expected": "Tree tab content renders",
+          "observed": "Tree root rendered with seeded hierarchy."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-tree_0_82B2E436-367C-44F5-A0BB-F57FED79D319.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-010",
+      "title": "Data Flow tab renders INCOMING / PROCESSING / OUTGOING sections",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Switch to Data Flow tab",
+          "expected": "Data Flow root with all three section headers",
+          "observed": "INCOMING/PROCESSING/OUTGOING headers verified; test passed."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-dataflow_0_688CB64D-BB17-4058-9888-400BE0142D31.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-011",
+      "title": "Settings tab renders with release-role and organiser-only actions",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Launch settings host as organiser",
+          "expected": "Edit Tree + Promote + Release Role visible",
+          "observed": "All organiser controls visible."
+        },
+        {
+          "action": "Launch settings host as participant",
+          "expected": "Release Role visible; organiser-only controls hidden",
+          "observed": "Participant controls matched expectation."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/settings-organiser_0_2C478707-2AEE-4D5B-B6AB-5DB69224177C.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/settings-participant_0_B5B024CE-87A0-430F-8F78-6DA5D8BEE730.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-012",
+      "title": "Tab navigation switches between all 4 tabs without state loss or crash",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Cycle Main -> Tree -> Data Flow -> Settings -> repeat",
+          "expected": "All transitions responsive and stable",
+          "observed": "Full tab cycle completed without crash; app remained foreground."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-main_0_28CC2BD7-B0C0-44F7-A162-F669C8CE41FC.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-tree_0_82B2E436-367C-44F5-A0BB-F57FED79D319.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-dataflow_0_688CB64D-BB17-4058-9888-400BE0142D31.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-settings_0_69D7C9BE-4E79-446C-ADC0-5C1F92A817C6.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-cycle-final_0_83E95BE5-91AC-438D-B32A-57397392DA3A.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/ui-smoke-test.log and test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A"
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-UI-013",
+      "title": "No SwiftUI runtime errors or console red-flags during full smoke walk",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Scan smoke and simctl console logs for required red-flag strings",
+          "expected": "Zero matches for all red-flag strings",
+          "observed": "All red-flag counts were zero across checked logs."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-cycle-final_0_83E95BE5-91AC-438D-B32A-57397392DA3A.png"
+        ],
+        "consoleErrors": "explicit red-flag check at test-and-fix/ui-regression/console-redflag-check.json (all counts 0 for Fatal error:, Thread 1: EXC_, SIGABRT, Modifying state during view update, AttributeGraph: cycle detected, Unhandled error, Invalid frame dimension)",
+        "network": "N/A",
+        "fullConsoleLogs": [
+          "test-and-fix/ui-regression/ui-smoke-test.log",
+          "test-and-fix/ui-regression/val-reg-002-full-test.log",
+          "test-and-fix/ui-regression/VAL-UI-001-simctl-console-second-run.log"
+        ]
+      },
+      "issues": null
+    },
+    {
+      "id": "VAL-REG-002",
+      "title": "End-to-end pipeline \u2014 clean build, full tests, simulator walkthrough all green",
+      "status": "pass",
+      "steps": [
+        {
+          "action": "Run clean build on iPhone 17 simulator destination",
+          "expected": "BUILD SUCCEEDED with zero non-allowlisted warnings",
+          "observed": "BUILD SUCCEEDED; warning_non_cactus=0."
+        },
+        {
+          "action": "Run full test suite",
+          "expected": "0 failures and >=119 tests",
+          "observed": "Unit suite executed 121 tests (0 failures) and UI suite executed 10 tests (0 failures) in same run."
+        },
+        {
+          "action": "Run simulator walkthrough evidence (UI smoke + simctl launch/install lifecycle)",
+          "expected": "Onboarding and tab smoke complete without crash",
+          "observed": "UI smoke tests passed and simctl launch evidence captured."
+        }
+      ],
+      "evidence": {
+        "screenshots": [
+          "test-and-fix/ui-regression/VAL-UI-001-launch-t5-second-run.png",
+          "test-and-fix/ui-regression/ui-smoke-attachments/tab-cycle-final_0_83E95BE5-91AC-438D-B32A-57397392DA3A.png"
+        ],
+        "consoleErrors": "none; see test-and-fix/ui-regression/console-redflag-check.json",
+        "network": "N/A",
+        "buildLog": "test-and-fix/ui-regression/val-reg-002-build.log",
+        "testLog": "test-and-fix/ui-regression/val-reg-002-full-test.log",
+        "smokeLog": "test-and-fix/ui-regression/ui-smoke-test.log",
+        "analysis": "test-and-fix/ui-regression/analysis-summary.json"
+      },
+      "issues": null
+    }
+  ],
+  "frictions": [
+    {
+      "description": "A preliminary liveness check using `simctl spawn booted ps -p <pid>` failed with \"No such file or directory\" in simulator shell.",
+      "resolved": true,
+      "resolution": "Used a stronger liveness proof: successful `simctl terminate` after 15s wait (exit 0) in second-run sequence.",
+      "affectedAssertions": [
+        "VAL-UI-001"
+      ]
+    },
+    {
+      "description": "Pre-launch `simctl terminate com.tacnet.app` returned \"found nothing to terminate\" when app was not running.",
+      "resolved": true,
+      "resolution": "Treated as benign precondition and proceeded to install/launch flow.",
+      "affectedAssertions": [
+        "VAL-UI-001",
+        "VAL-REG-002"
+      ]
+    }
+  ],
+  "blockers": [],
+  "summary": "Validated 14 assigned assertions (VAL-UI-001..013, VAL-REG-002): 14 passed, 0 failed, 0 blocked. Pipeline checks green with BUILD SUCCEEDED, full tests (121 unit + 10 UI) passing, simulator smoke evidence captured, and red-flag console strings absent."
+}

@@ -1,0 +1,39 @@
+{
+  "milestone": "test-and-fix",
+  "round": 2,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (TacNetUITests) and xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "xcodebuild build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (non-upstream warning check from /tmp/tacnet-clean-build-round2.log: ': warning:' lines excluding 'cactus.framework' = 0)",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 2,
+    "passed": 2,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [
+    {
+      "target": "library",
+      "description": "Updated .factory/library/ui-tests.md with new UI-test launch arguments and settings route host usage added by the fix feature.",
+      "sourceFeature": "extend-ui-smoke-bootstrap-and-settings"
+    }
+  ],
+  "suggestedGuidanceUpdates": [],
+  "rejectedObservations": [],
+  "previousRound": ".factory/validation/test-and-fix/scrutiny/synthesis.round1.json"
+}

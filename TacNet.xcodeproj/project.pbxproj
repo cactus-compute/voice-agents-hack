@@ -1,0 +1,736 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1DCCC616FCABDDA833533698 /* CactusFunctionProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */; };
+		22811F4EAE3A4C3BA68A7A21 /* DataModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E9431F9B30497E8EDB9430 /* DataModels.swift */; };
+		3648F7E613F44A65D04613DE /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8451F9C07E853485C45F4F99 /* CoreBluetooth.framework */; };
+		5863C0BC2A92CD99DDF194B0 /* SwiftData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CE9717028B011FFC9077618 /* SwiftData.framework */; };
+		60F2A5ED16BD700076B0137A /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */; };
+		66E3031B06D5D288CAA152B8 /* TacNetUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05AC0E84E210EDC684F6E0B /* TacNetUITests.swift */; };
+		6CDA0F05E8151523EE2CE29F /* Cactus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 942FCEBF9EBF2DBA591798EC /* Cactus.swift */; };
+		72FB70D9CC71AE84C1FAC19B /* TacNetApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 477E1CE86B91D0FB9556A590 /* TacNetApp.swift */; };
+		755B2109433A1DE815E1A11F /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CB01F5E99AEAA1D250F4F26 /* AVFoundation.framework */; };
+		8325E27D29419CA6CD6908C5 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80024568731CDCB04A01CE89 /* CoreLocation.framework */; };
+		A1B2C3D4E5F60718293A4B5C /* BluetoothMeshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */; };
+		A33F68E2F2BA987E1B5E21C3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC80363B64F4B07E7F424CCD /* Foundation.framework */; };
+		AB428A6D50CBEC9E6967DB77 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC80363B64F4B07E7F424CCD /* Foundation.framework */; };
+		B3EDC1A65C8C85021FFD98C7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC80363B64F4B07E7F424CCD /* Foundation.framework */; };
+		C15F1E37C9232822B5AD9CB0 /* FrameworkImportsProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */; };
+		CC3B531DE3DD2D794CC8CCDE /* TacNetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */; };
+		D24C38D42F927CB700DC5610 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = D24C38D32F927CB700DC5610 /* ZIPFoundation */; };
+		DCDED2D71C5E58146B3EF85E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 665084993F5AD346766676E3 /* ContentView.swift */; };
+		E860E4FE8175156FBDA6ADB3 /* cactus-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F1A2B3C4D5E6F708192A3B4C /* TextToSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B40 /* TextToSpeechService.swift */; };
+		F1A2B3C4D5E6F708192A3B4D /* ParakeetCTC in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F708192A3B41 /* ParakeetCTC */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		97542E2B20426CB71CB4B186 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B103C177B26E6D3CEBF09C80 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DE86492B726262CB9760FC3C;
+			remoteInfo = TacNet;
+		};
+		B31A43C0D255489E0820AB7C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B103C177B26E6D3CEBF09C80 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DE86492B726262CB9760FC3C;
+			remoteInfo = TacNet;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		834E6DF35EB0CA6BC901B89F /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				E860E4FE8175156FBDA6ADB3 /* cactus-ios.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		1B33754BBFB094E4ADF6DC74 /* TacNet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TacNet.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1EAAC907BEADE3F8934CF872 /* TacNetTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TacNetTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		477E1CE86B91D0FB9556A590 /* TacNetApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TacNetApp.swift; sourceTree = "<group>"; };
+		4CE9717028B011FFC9077618 /* SwiftData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftData.framework; path = System/Library/Frameworks/SwiftData.framework; sourceTree = "<group>"; };
+		653FB6F1AC35BB4057186A0B /* TacNetUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TacNetUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		665084993F5AD346766676E3 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		80024568731CDCB04A01CE89 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = "<group>"; };
+		840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = wrapper.xcframework; path = "cactus-ios.xcframework"; sourceTree = "<group>"; };
+		8451F9C07E853485C45F4F99 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = "<group>"; };
+		8CB01F5E99AEAA1D250F4F26 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = "<group>"; };
+		942FCEBF9EBF2DBA591798EC /* Cactus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Cactus.swift; sourceTree = "<group>"; };
+		A05AC0E84E210EDC684F6E0B /* TacNetUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TacNetUITests.swift; sourceTree = "<group>"; };
+		AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TacNetTests.swift; sourceTree = "<group>"; };
+		B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CactusFunctionProbe.swift; sourceTree = "<group>"; };
+		BC80363B64F4B07E7F424CCD /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		C5E9431F9B30497E8EDB9430 /* DataModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DataModels.swift; sourceTree = "<group>"; };
+		CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FrameworkImportsProbe.swift; sourceTree = "<group>"; };
+		D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BluetoothMeshService.swift; sourceTree = "<group>"; };
+		DCC08F62BEAD6B96F2F1A649 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B40 /* TextToSpeechService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextToSpeechService.swift; sourceTree = "<group>"; };
+		F1A2B3C4D5E6F708192A3B41 /* ParakeetCTC */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ParakeetCTC; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		11DFA7F0439BF27C647196D4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AB428A6D50CBEC9E6967DB77 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		43CE07207CBC5985A6B0FABF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A33F68E2F2BA987E1B5E21C3 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6107D29D5B98D9861ADBA5C6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B3EDC1A65C8C85021FFD98C7 /* Foundation.framework in Frameworks */,
+				3648F7E613F44A65D04613DE /* CoreBluetooth.framework in Frameworks */,
+				755B2109433A1DE815E1A11F /* AVFoundation.framework in Frameworks */,
+				8325E27D29419CA6CD6908C5 /* CoreLocation.framework in Frameworks */,
+				5863C0BC2A92CD99DDF194B0 /* SwiftData.framework in Frameworks */,
+				60F2A5ED16BD700076B0137A /* cactus-ios.xcframework in Frameworks */,
+				D24C38D42F927CB700DC5610 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		02F396F777375CDA52C06045 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1B33754BBFB094E4ADF6DC74 /* TacNet.app */,
+				1EAAC907BEADE3F8934CF872 /* TacNetTests.xctest */,
+				653FB6F1AC35BB4057186A0B /* TacNetUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1AAA812917449A8F3B4F1DAF /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				DCC08F62BEAD6B96F2F1A649 /* Info.plist */,
+				F1A2B3C4D5E6F708192A3B41 /* ParakeetCTC */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		36018B067800C561E8C4E6F3 = {
+			isa = PBXGroup;
+			children = (
+				02F396F777375CDA52C06045 /* Products */,
+				C9B7656BBCB5BB96F4ED2012 /* Frameworks */,
+				8570BB712B76C2CAABCB5891 /* TacNet */,
+				99471275C3EF589B8DD83435 /* TacNetTests */,
+				B4349ED85C6D5A880ACA68E0 /* Frameworks */,
+				76AFA663436C88625AA1F550 /* TacNetUITests */,
+			);
+			sourceTree = "<group>";
+		};
+		544AA3EB9D009B7AF0BA9FE9 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				CBA28F70F5CA30B49BA85E15 /* FrameworkImportsProbe.swift */,
+				B523C85320FDF451CB0C1868 /* CactusFunctionProbe.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		5E9056FF843ACE375D2228D7 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				665084993F5AD346766676E3 /* ContentView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		76AFA663436C88625AA1F550 /* TacNetUITests */ = {
+			isa = PBXGroup;
+			children = (
+				A05AC0E84E210EDC684F6E0B /* TacNetUITests.swift */,
+			);
+			path = TacNetUITests;
+			sourceTree = "<group>";
+		};
+		7D354B9B9D28EABA37BB4204 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				942FCEBF9EBF2DBA591798EC /* Cactus.swift */,
+				D4C3B2A1F0E9D8C7B6A59483 /* BluetoothMeshService.swift */,
+				F1A2B3C4D5E6F708192A3B40 /* TextToSpeechService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		8570BB712B76C2CAABCB5891 /* TacNet */ = {
+			isa = PBXGroup;
+			children = (
+				86BCBDC367E58B2053A70B92 /* Models */,
+				7D354B9B9D28EABA37BB4204 /* Services */,
+				A2703F24FCE114DE52FB3360 /* ViewModels */,
+				5E9056FF843ACE375D2228D7 /* Views */,
+				544AA3EB9D009B7AF0BA9FE9 /* Utilities */,
+				1AAA812917449A8F3B4F1DAF /* Resources */,
+				477E1CE86B91D0FB9556A590 /* TacNetApp.swift */,
+			);
+			path = TacNet;
+			sourceTree = "<group>";
+		};
+		86BCBDC367E58B2053A70B92 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				C5E9431F9B30497E8EDB9430 /* DataModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		99471275C3EF589B8DD83435 /* TacNetTests */ = {
+			isa = PBXGroup;
+			children = (
+				AF5403C7E7D4A6DEFDECBC54 /* TacNetTests.swift */,
+				E2470CE6E0019A05EA6D15F9 /* Screenshots */,
+			);
+			path = TacNetTests;
+			sourceTree = "<group>";
+		};
+		A2703F24FCE114DE52FB3360 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		B4349ED85C6D5A880ACA68E0 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				840C37A2D2F49CB246A0AED1 /* cactus-ios.xcframework */,
+			);
+			path = Frameworks;
+			sourceTree = "<group>";
+		};
+		C7468689D164ADE8EF2CF706 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				BC80363B64F4B07E7F424CCD /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		C9B7656BBCB5BB96F4ED2012 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C7468689D164ADE8EF2CF706 /* iOS */,
+				8451F9C07E853485C45F4F99 /* CoreBluetooth.framework */,
+				8CB01F5E99AEAA1D250F4F26 /* AVFoundation.framework */,
+				80024568731CDCB04A01CE89 /* CoreLocation.framework */,
+				4CE9717028B011FFC9077618 /* SwiftData.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		E2470CE6E0019A05EA6D15F9 /* Screenshots */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Screenshots;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		392689135928FC994FC900BF /* TacNetTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3DBDC05F955C0C6C1F29A543 /* Build configuration list for PBXNativeTarget "TacNetTests" */;
+			buildPhases = (
+				BEF32D186FB60C99B9A0CF72 /* Sources */,
+				43CE07207CBC5985A6B0FABF /* Frameworks */,
+				26F2B7CF15C2A80F371DCEEE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BBDB1B48A3474AE53CF62684 /* PBXTargetDependency */,
+			);
+			name = TacNetTests;
+			productName = TacNetTests;
+			productReference = 1EAAC907BEADE3F8934CF872 /* TacNetTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		614EC075E96D15F863A493F8 /* TacNetUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 268BC3949662904F0003975A /* Build configuration list for PBXNativeTarget "TacNetUITests" */;
+			buildPhases = (
+				4D277C1179BB185A4F91BD07 /* Sources */,
+				11DFA7F0439BF27C647196D4 /* Frameworks */,
+				968F2697A7A29280002E024D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				753FB64AC3A7EB2E55F907DB /* PBXTargetDependency */,
+			);
+			name = TacNetUITests;
+			productName = TacNetUITests;
+			productReference = 653FB6F1AC35BB4057186A0B /* TacNetUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		DE86492B726262CB9760FC3C /* TacNet */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D33B37773CF641247EEB801 /* Build configuration list for PBXNativeTarget "TacNet" */;
+			buildPhases = (
+				72F8A90E2AE10CEF0CBEF333 /* Sources */,
+				6107D29D5B98D9861ADBA5C6 /* Frameworks */,
+				1EC639204C617B64C143CBC0 /* Resources */,
+				834E6DF35EB0CA6BC901B89F /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TacNet;
+			productName = TacNet;
+			productReference = 1B33754BBFB094E4ADF6DC74 /* TacNet.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B103C177B26E6D3CEBF09C80 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 154F9388501B268EC9E695F4 /* Build configuration list for PBXProject "TacNet" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 36018B067800C561E8C4E6F3;
+			packageReferences = (
+				D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */,
+			);
+			productRefGroup = 02F396F777375CDA52C06045 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DE86492B726262CB9760FC3C /* TacNet */,
+				392689135928FC994FC900BF /* TacNetTests */,
+				614EC075E96D15F863A493F8 /* TacNetUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1EC639204C617B64C143CBC0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F1A2B3C4D5E6F708192A3B4D /* ParakeetCTC in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		26F2B7CF15C2A80F371DCEEE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		968F2697A7A29280002E024D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4D277C1179BB185A4F91BD07 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				66E3031B06D5D288CAA152B8 /* TacNetUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		72F8A90E2AE10CEF0CBEF333 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				72FB70D9CC71AE84C1FAC19B /* TacNetApp.swift in Sources */,
+				DCDED2D71C5E58146B3EF85E /* ContentView.swift in Sources */,
+				6CDA0F05E8151523EE2CE29F /* Cactus.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* BluetoothMeshService.swift in Sources */,
+				C15F1E37C9232822B5AD9CB0 /* FrameworkImportsProbe.swift in Sources */,
+				1DCCC616FCABDDA833533698 /* CactusFunctionProbe.swift in Sources */,
+				22811F4EAE3A4C3BA68A7A21 /* DataModels.swift in Sources */,
+				F1A2B3C4D5E6F708192A3B4C /* TextToSpeechService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BEF32D186FB60C99B9A0CF72 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC3B531DE3DD2D794CC8CCDE /* TacNetTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		753FB64AC3A7EB2E55F907DB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = TacNet;
+			target = DE86492B726262CB9760FC3C /* TacNet */;
+			targetProxy = B31A43C0D255489E0820AB7C /* PBXContainerItemProxy */;
+		};
+		BBDB1B48A3474AE53CF62684 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = TacNet;
+			target = DE86492B726262CB9760FC3C /* TacNet */;
+			targetProxy = 97542E2B20426CB71CB4B186 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		293191A73553C632A1DA89ED /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TacNet/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.app;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		29966A4B27A0D7942CE75AD5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TacNet/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.app;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		4AA52F24E493CC62189DAC79 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		7760635942997C4A8A1F3D4D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		89775759AE1CB71597B4123D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TacNet;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		CFB836C893F5898CB09668E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 9L92JZM53P;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = TacNet;
+			};
+			name = Debug;
+		};
+		D0022D74BD7A2CE478776C14 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/Frameworks",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TacNet.app/TacNet";
+			};
+			name = Debug;
+		};
+		F375623228F5C0A06053DBE3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@loader_path/Frameworks",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tacnet.appTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TacNet.app/TacNet";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		154F9388501B268EC9E695F4 /* Build configuration list for PBXProject "TacNet" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4AA52F24E493CC62189DAC79 /* Debug */,
+				7760635942997C4A8A1F3D4D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		268BC3949662904F0003975A /* Build configuration list for PBXNativeTarget "TacNetUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				89775759AE1CB71597B4123D /* Release */,
+				CFB836C893F5898CB09668E1 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		3DBDC05F955C0C6C1F29A543 /* Build configuration list for PBXNativeTarget "TacNetTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F375623228F5C0A06053DBE3 /* Release */,
+				D0022D74BD7A2CE478776C14 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D33B37773CF641247EEB801 /* Build configuration list for PBXNativeTarget "TacNet" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				293191A73553C632A1DA89ED /* Release */,
+				29966A4B27A0D7942CE75AD5 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZipFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D24C38D32F927CB700DC5610 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D24C38D22F927CB700DC5610 /* XCRemoteSwiftPackageReference "ZipFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = B103C177B26E6D3CEBF09C80 /* Project object */;
+}

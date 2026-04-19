@@ -1,0 +1,45 @@
+{
+  "milestone": "ptt-gesture-fix",
+  "round": 2,
+  "status": "pass",
+  "validatorsRun": {
+    "test": {
+      "passed": true,
+      "command": "xcodebuild test -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0
+    },
+    "typecheck": {
+      "passed": true,
+      "command": "xcodebuild build -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0
+    },
+    "lint": {
+      "passed": true,
+      "command": "xcodebuild clean build -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' (non-upstream warning check: ': warning:' lines excluding 'cactus.framework' = 0)",
+      "exitCode": 0
+    }
+  },
+  "reviewsSummary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": ".factory/skills/ios-worker/SKILL.md",
+      "suggestion": "Reinforce the tests-first requirement by requiring workers to explicitly capture the red-state command output before implementation edits when they mark followedProcedure=true.",
+      "evidence": "Reviewer observed implementation edits before test additions in transcript order, while the handoff still claimed procedure compliance.",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [
+    {
+      "observation": "Update .factory/library/ui-tests.md to reflect new PTT log-capture launch arguments and selectors.",
+      "reason": "documentation update rejected in this pass; outside this validator run scope and not required for milestone correctness"
+    }
+  ],
+  "previousRound": ".factory/validation/ptt-gesture-fix/scrutiny/synthesis.round1.json"
+}

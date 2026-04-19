@@ -1,0 +1,39 @@
+{
+  "featureId": "fix-ptt-button-gesture-dispatch",
+  "reviewedAt": "2026-04-18T15:25:13Z",
+  "commitId": "1efd3e704ab886ede95a408cbffd2de1ceb72e2c",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The production fix (Button + PTTButtonStyle + PTTPressDispatcher wiring in MainView) is directionally sound, but the added regression coverage does not verify the contracted failure mode in the real Main-tab integration path. The new UI tests validate a stripped fixture route and a counter proxy, so they can pass even if MainViewModel dispatch/log behavior regresses in the actual TabView/NavigationStack context.",
+    "issues": [
+      {
+        "file": "TacNetUITests/TacNetUITests.swift",
+        "line": 477,
+        "severity": "blocking",
+        "description": "Both new regression tests launch `--ui-test-route=main-ptt` (also at line 542), which bypasses the real Main tab (`TabView` + `NavigationStack`) and does not exercise `MainViewModel.startPushToTalk()` / `stopPushToTalk()` dispatch. This does not satisfy the feature expectation to verify long-press dispatch reaches MainViewModel on the Main tab and can miss integration regressions."
+      },
+      {
+        "file": "TacNetUITests/TacNetUITests.swift",
+        "line": 532,
+        "severity": "blocking",
+        "description": "`testPTTButtonGestureDoesNotProduceGestureGateTimeout` explicitly uses a behavioral proxy instead of asserting console evidence (`[PTT]` presence and absence of `Gesture: System gesture gate timed out`). The feature/validation contract requires log-based verification of this exact failure signature; current assertions only check local counters."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "`ios-worker` requires tests-first/TDD (tests should fail red before implementation), but transcript order shows implementation edits were done before adding the new regression tests while handoff still reports `followedProcedure: true`.",
+      "evidence": ".factory/skills/ios-worker/SKILL.md:25-34 defines tests-first; worker-transcripts.jsonl:10 skeleton shows 'Now I'll implement the fix' and multiple `Edit` calls before 'Now let me add the unit test and UI tests'."
+    },
+    {
+      "area": "knowledge",
+      "observation": "UI-test shared knowledge appears stale after this feature: library docs still describe PTT as a combined `tacnet.main.pttControl` element and do not document the new `--ui-test-route=main-ptt` fixture / `tacnet.main.pttButton` path used by new tests.",
+      "evidence": ".factory/library/ui-tests.md:45-46 says PTT surfaces as `tacnet.main.pttControl`; new code adds `main-ptt` route and `tacnet.main.pttButton` in TacNet/Views/ContentView.swift:216-217 and 2755."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Code fix appears plausible, but scrutiny fails because regression tests do not validate the required real Main-tab/MainViewModel dispatch and do not assert the required console-log timeout signature."
+}

@@ -1,0 +1,53 @@
+{
+  "milestone": "test-and-fix",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 25,
+    "passed": 25,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-MD-001",
+    "VAL-MD-002",
+    "VAL-MD-003",
+    "VAL-MD-004",
+    "VAL-MD-005",
+    "VAL-MD-006",
+    "VAL-MD-007",
+    "VAL-PTT-001",
+    "VAL-BH-001",
+    "VAL-BH-002",
+    "VAL-REG-001",
+    "VAL-UI-001",
+    "VAL-UI-002",
+    "VAL-UI-003",
+    "VAL-UI-004",
+    "VAL-UI-005",
+    "VAL-UI-006",
+    "VAL-UI-007",
+    "VAL-UI-008",
+    "VAL-UI-009",
+    "VAL-UI-010",
+    "VAL-UI-011",
+    "VAL-UI-012",
+    "VAL-UI-013",
+    "VAL-REG-002"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [
+    {
+      "target": "user-testing.md",
+      "description": "Added \"Flow Validator Guidance: iOS Simulator\" isolation rules for subagent safety and output boundaries.",
+      "source": "setup"
+    },
+    {
+      "target": "user-testing.md",
+      "description": "Documented that explicit -only-testing selectors are required to reliably include TacNetTests in validation runs.",
+      "source": "flow-report"
+    }
+  ],
+  "previousRound": null
+}

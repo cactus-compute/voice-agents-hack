@@ -1,0 +1,68 @@
+{
+  "groupId": "ptt-gesture-main-tab",
+  "milestone": "ptt-gesture-fix",
+  "surface": "iOS Simulator (iPhone 17, OS=latest) via xcodebuild UI tests (TacNetUITests)",
+  "status": "pass",
+  "testedAt": "2026-04-18T20:08:02.101877+00:00",
+  "assertions": [
+    {
+      "id": "VAL-PTT-002",
+      "status": "pass",
+      "evidence": [
+        "ptt-gesture-fix/ptt-gesture-main-tab/xcodebuild-ptt.log",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-002-real-main-tab-single-press.log",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-002-real-main-tab-before-press.png",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-002-real-main-tab-after-press.png",
+        "ptt-gesture-fix/ptt-gesture-main-tab/ptt-evidence-summary.txt"
+      ],
+      "notes": "xcodebuild: testPTTButtonLongPressOnRealMainTabDispatchesToViewModel passed (22.755s). Captured log includes '[PTT] Button press-began', '[PTT] Recording started (connected peers: 1)', and '[PTT] Button press-ended'. Timeout marker count for 'Gesture: System gesture gate timed out' = 0 in both xcodebuild log and single-press attachment log."
+    },
+    {
+      "id": "VAL-PTT-003",
+      "status": "pass",
+      "evidence": [
+        "ptt-gesture-fix/ptt-gesture-main-tab/xcodebuild-ptt.log",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-003-real-main-tab-repeated-press.log",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-003-real-main-tab-after-first-press.png",
+        "ptt-gesture-fix/ptt-gesture-main-tab/VAL-PTT-003-real-main-tab-after-second-press.png",
+        "ptt-gesture-fix/ptt-gesture-main-tab/ptt-evidence-summary.txt"
+      ],
+      "notes": "xcodebuild: testPTTButtonGestureOnRealMainTabNoGateTimeoutAcrossRepeatedPresses passed (26.494s). Repeated-press captured log contains 2 '[PTT] Button press-began' lines and 2 '[PTT] Button press-ended' lines (one pair per long-press cycle), with disconnected-path '[PTT] \u274c Rejected \u2014 disconnected from mesh' evidence and no gesture-timeout line."
+    }
+  ],
+  "commands": [
+    {
+      "command": "mkdir -p <missionEvidenceDir> && xcodebuild test -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetUITests/TacNetUISmokeTests/testPTTButtonLongPressOnRealMainTabDispatchesToViewModel -only-testing:TacNetUITests/TacNetUISmokeTests/testPTTButtonGestureOnRealMainTabNoGateTimeoutAcrossRepeatedPresses -resultBundlePath <missionEvidenceDir>/ptt-gesture-tests.xcresult 2>&1 | tee <missionEvidenceDir>/xcodebuild-ptt.log",
+      "exitCode": 0,
+      "observation": "Executed 2 targeted UI tests with 0 failures and '** TEST SUCCEEDED **'."
+    },
+    {
+      "command": "xcrun xcresulttool export attachments --path <missionEvidenceDir>/ptt-gesture-tests.xcresult --output-path <missionEvidenceDir>/attachments",
+      "exitCode": 0,
+      "observation": "Exported 6 attachments (4 screenshots, 2 text logs) plus manifest.json for the two targeted tests."
+    },
+    {
+      "command": "python3 evidence check (timeout string count + pass-line extraction)",
+      "exitCode": 0,
+      "observation": "timeout_count=0 for xcodebuild log and both captured PTT logs; pass lines for both targeted tests extracted into ptt-evidence-summary.txt."
+    }
+  ],
+  "frictions": [
+    {
+      "description": "xcodebuild emitted non-fatal simulator/test-runner noise lines (IDELaunchParametersSnapshot debugger-version warning and duplicate UIAccessibilityLoaderWebShared class warning).",
+      "resolved": true,
+      "resolution": "No action required; tests continued and passed.",
+      "affectedAssertions": [
+        "VAL-PTT-002",
+        "VAL-PTT-003"
+      ]
+    }
+  ],
+  "blockers": [],
+  "toolsUsed": [
+    "xcodebuild",
+    "xcrun xcresulttool",
+    "python3"
+  ],
+  "summary": "Validated VAL-PTT-002 and VAL-PTT-003 on the real Main-tab long-press path via targeted TacNetUITests. Both assertions passed with concrete [PTT] log evidence and zero occurrences of 'Gesture: System gesture gate timed out'."
+}

@@ -1,0 +1,10 @@
+commands:
+  build: xcodebuild build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+  clean-build: xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+  test: xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+  test-ui: xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetUITests
+  test-unit: xcodebuild test -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests
+  clean: xcodebuild clean -project TacNet.xcodeproj -scheme TacNet
+  warnings-only: xcodebuild clean build -project TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' 2>&1 | grep ': warning:' | grep -v 'cactus.framework'
+
+services: {}

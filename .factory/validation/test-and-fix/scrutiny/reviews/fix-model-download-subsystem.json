@@ -1,0 +1,33 @@
+{
+  "featureId": "fix-model-download-subsystem",
+  "reviewedAt": "2026-04-18T07:02:37Z",
+  "commitId": "15e28247a458f8c3852d60fce73b4827789bc3b2",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The commit implements the intended interruption/resume/gating flow in ModelDownloadService, but it introduces a blocking integrity regression: any non-zip payload is treated as a successful model install and completion is persisted.",
+    "issues": [
+      {
+        "file": "TacNet/Services/Cactus.swift",
+        "line": 1066,
+        "severity": "blocking",
+        "description": "The non-zip branch installs any payload without validating size or format, then marks the download complete (completionKey=true at line 1088). A tiny/invalid HTTP 200 body (e.g. error page) would unlock tactical features and persist a bad artifact instead of surfacing a network/size-mismatch error."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The ios-worker skill's step 6 states 'All tests must pass', but this mission intentionally had known failures split across features; the worker correctly reported unrelated remaining failures and still completed the feature. The skill should document baseline-delta handling for multi-feature fix missions.",
+      "evidence": ".factory/skills/ios-worker/SKILL.md (Step 6) vs handoff verification in mission handoff file 2026-04-18T06-11-28-675Z__fix-model-download-subsystem__942874ae-914b-40c7-bc51-6383f736d611.json (full suite still had the separate PTT failure)."
+    },
+    {
+      "area": "conventions",
+      "observation": "Feature commit isolation is unclear when mission starts from a dirty tree. This feature commit included broad unrelated file changes (BluetoothMeshService/ContentView) while scoped to ModelDownload/AppBootstrap, making review noisier and coupling unrelated behavior changes to a subsystem fix.",
+      "evidence": "git show --stat 15e28247a458f8c3852d60fce73b4827789bc3b2 shows 4 files changed including TacNet/Services/BluetoothMeshService.swift and TacNet/Views/ContentView.swift, beyond the scoped ModelDownload fix in Cactus.swift."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: although the targeted resume/interruption test failures were addressed, the new non-zip success path can falsely mark invalid downloads as complete, which is a correctness risk in the model-download subsystem."
+}

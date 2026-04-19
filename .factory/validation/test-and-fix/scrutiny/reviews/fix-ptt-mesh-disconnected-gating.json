@@ -1,0 +1,21 @@
+{
+  "featureId": "fix-ptt-mesh-disconnected-gating",
+  "reviewedAt": "2026-04-18T07:00:15Z",
+  "commitId": "b59fdcb",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation in TacNet/Views/ContentView.swift correctly gates PTT when no mesh peers are connected: it exits before audio capture, keeps `pttState` idle, sets the exact required disconnection error string, and adds the requested rejected-path NSLog while preserving the existing connected-path recording NSLog. The connected path and related state-machine behavior remain intact, and no blocking or non-blocking code defects were identified in this feature diff.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "There is a procedure/enforcement mismatch: the ios-worker skill requires a full `xcodebuild build` step, but this worker session only ran targeted/full tests and still marked `skillFeedback.followedProcedure` as true.",
+      "evidence": ".factory/skills/ios-worker/SKILL.md (Work Procedure step 5 requires running `xcodebuild build`); worker transcript skeleton for session 7f26a86e-7e92-4f8d-9d24-2460a35c88ec shows only `xcodebuild test` commands before commit and EndFeatureRun."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Review passed. The PTT disconnected-mesh gating fix is correctly implemented and aligned with the feature contract; no code issues found in the reviewed commit."
+}

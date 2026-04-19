@@ -1,0 +1,26 @@
+{
+  "featureId": "harden-ptt-gesture-ui-tests-real-main-tab-and-console-assertions",
+  "reviewedAt": "2026-04-18T20:01:31Z",
+  "commitId": "206d21bc1ce366f4fd204a7f6f3250d9a3ed65fa",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The fix directly addresses the prior blocking scrutiny findings: new real-Main-tab XCUITests were added without `--ui-test-route=main-ptt`, they drive the live `tacnet.main.pttButton` inside the production `TabView`/`NavigationStack`, and they assert captured console evidence includes `[PTT]` while excluding `Gesture: System gesture gate timed out`. The original synthetic-host tests remain as secondary coverage and no regressions were found in the reviewed diffs.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "skills",
+      "observation": "The ios-worker skill requires tests-first/TDD, but this run's transcript shows implementation edits before adding the new XCUITests while handoff still marked `followedProcedure: true`.",
+      "evidence": ".factory/skills/ios-worker/SKILL.md:25,33 (tests-first requirement) vs worker-transcripts.jsonl:12 skeleton ('Now let me implement the changes...') before later 'Now let me write the two new XCUITests'."
+    },
+    {
+      "area": "knowledge",
+      "observation": "Shared UI-test documentation is stale after this feature: new launch args and real PTT identifiers/flow are not documented, while old wording still describes the PTT control as only `tacnet.main.pttControl`.",
+      "evidence": ".factory/library/ui-tests.md:46 still documents `tacnet.main.pttControl`; new behavior is in TacNetUITests/TacNetUITests.swift:617-672 (`--ui-test-capture-logs`, `--ui-test-mesh-peers`) and TacNet/Views/ContentView.swift:54-72,2869-2986 (`tacnet.debug.logBuffer`, `tacnet.debug.refreshLogBuffer`, real-main-tab log capture)."
+    }
+  ],
+  "addressesFailureFrom": ".factory/validation/ptt-gesture-fix/scrutiny/reviews/fix-ptt-button-gesture-dispatch.json",
+  "summary": "Pass. Reviewing both commit diffs confirms this fix closes the original failure: decisive regression evidence now comes from real Main-tab interactions with captured `[PTT]` log assertions and explicit no-timeout checks, rather than only synthetic-host counter proxies."
+}

@@ -1,0 +1,34 @@
+{
+  "featureId": "simulator-ui-smoke-walkthrough-and-fix",
+  "reviewedAt": "2026-04-18T07:01:59.691954Z",
+  "commitId": "5287ef6",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "fail",
+  "codeReview": {
+    "summary": "The feature adds substantial XCUITest and accessibility infrastructure (primarily in commit 57f1548, with follow-up docs/services in 5287ef6), but the automated smoke suite does not actually exercise the bootstrap/download-progress path that the feature contract explicitly requires.",
+    "issues": [
+      {
+        "file": "TacNetUITests/TacNetUITests.swift",
+        "line": 30,
+        "severity": "blocking",
+        "description": "`makeApp()` always injects `--ui-test-skip-download`, and all non-route tests call this helper, so the XCUITest walkthrough never executes the real bootstrap/download-progress screen. This misses the feature requirement to cover the bootstrap/download gate path in the automated walkthrough."
+      },
+      {
+        "file": "TacNetUITests/TacNetUITests.swift",
+        "line": 319,
+        "severity": "non_blocking",
+        "description": "The Settings-tab check only asserts that `tacnet.settings.root` renders; it does not verify key controls (e.g., Release Role / organiser-only affordances), so claimed VAL-UI-011 coverage is weaker than specified in the validation contract."
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "Feature handoff commit pointer is ambiguous for reviewers: handoff `commitId` is `5287ef6` (docs/services only), while the core implementation diff for this feature is in the immediate parent commit `57f1548`.",
+      "evidence": "Handoff file `/Users/lucaspfingstenplanells/.factory/missions/68f59012-fcda-4f36-a993-558e770a5762/handoffs/2026-04-18T06-45-45-667Z__simulator-ui-smoke-walkthrough-and-fix__006b1307-f022-4a6f-8e72-0826bb8b0ba3.json` sets `commitId: 5287ef6`; `git show --stat 5287ef6` shows only `.factory/library/ui-tests.md` and `.factory/services.yaml`, while transcript skeleton contains `git log -1 --oneline` output for `57f1548 Add TacNetUITests XCUITest target and Simulator smoke walkthrough`."
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "Fail: the feature infrastructure is largely in place, but automated smoke coverage skips the bootstrap/download-progress path that this feature explicitly required, so implementation completeness is not met."
+}

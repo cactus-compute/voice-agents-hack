@@ -1,0 +1,212 @@
+{
+  "groupId": "core-build",
+  "testedAt": "2026-04-18T07:48:40.105559+00:00",
+  "isolation": {
+    "lane": "single-validator",
+    "destination": "platform=iOS Simulator,name=iPhone 17,OS=latest",
+    "milestone": "test-and-fix",
+    "scope": "non-UI assertions only",
+    "businessLogicModified": false
+  },
+  "toolsUsed": [
+    "xcodebuild",
+    "grep",
+    "python3"
+  ],
+  "commandsRun": [
+    {
+      "command": "xcodebuild test -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0,
+      "logRef": "test-and-fix/core-build/xcodebuild-test.log",
+      "note": "Default scheme test action executed TacNetUITests (10 tests)."
+    },
+    {
+      "command": "xcodebuild test -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests",
+      "exitCode": 0,
+      "logRef": "test-and-fix/core-build/xcodebuild-test-unit.log"
+    },
+    {
+      "command": "xcodebuild test -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' -only-testing:TacNetTests -only-testing:TacNetUITests",
+      "exitCode": 0,
+      "logRef": "test-and-fix/core-build/xcodebuild-test-all.log"
+    },
+    {
+      "command": "xcodebuild clean build -project /Users/lucaspfingstenplanells/Desktop/YC-hack/TacNet.xcodeproj -scheme TacNet -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'",
+      "exitCode": 0,
+      "logRef": "test-and-fix/core-build/xcodebuild-clean-build.log"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "VAL-MD-001",
+      "title": "Monotonic progress with \u22655 intermediate callbacks and gate unlock",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testModelDownloadServiceReportsMonotonicProgressWithAtLeastFiveIntermediateCallbacksAndUnlocksGate"
+      }
+    },
+    {
+      "id": "VAL-MD-002",
+      "title": "Features block during download and unlock within 3 seconds of completion",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testAppBootstrapViewModelBlocksTacticalFeaturesDuringDownloadAndUnlocksWithinThreeSeconds"
+      }
+    },
+    {
+      "id": "VAL-MD-003",
+      "title": "Retry resumes using stored resume data (not a fresh attempt)",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testAppBootstrapViewModelRetryResumesInterruptedDownloadFromPriorPoint"
+      }
+    },
+    {
+      "id": "VAL-MD-004",
+      "title": "ModelDownloadService resumes using stored resume data after interruption",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testModelDownloadServiceResumesUsingStoredResumeDataAfterInterruption"
+      }
+    },
+    {
+      "id": "VAL-MD-005",
+      "title": "Interruption recovery produces interrupted-class error then succeeds on retry",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testCrossAreaModelDownloadInterruptionRecoveryThenCactusInitSucceeds"
+      }
+    },
+    {
+      "id": "VAL-MD-006",
+      "title": "Cactus init is gated until download completes, then uses downloaded path",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testCactusModelInitializationIsGatedUntilDownloadCompletesThenUsesDownloadedPath"
+      }
+    },
+    {
+      "id": "VAL-MD-007",
+      "title": "First-time journey \u2014 download \u2192 init \u2192 join \u2192 PTT \u2192 transcript delivery within 5s",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testCrossAreaFirstTimeJourneyDownloadInitJoinPTTAndTranscriptDeliveryWithinFiveSeconds"
+      }
+    },
+    {
+      "id": "VAL-PTT-001",
+      "title": "PTT disabled and error shown when disconnected from mesh",
+      "status": "pass",
+      "reason": "Target XCTest passed in TacNetTests.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-unit.log",
+          "test-and-fix/core-build/test-assertions-snippet.txt"
+        ],
+        "testName": "testMainViewModelPTTDisabledWhenDisconnectedAndShowsError"
+      }
+    },
+    {
+      "id": "VAL-BH-001",
+      "title": "Clean build emits zero warnings",
+      "status": "pass",
+      "reason": "Clean build completed and non-cactus warning count is 0 (8 warnings are documented cactus.framework allowlist).",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-clean-build.log",
+          "test-and-fix/core-build/xcodebuild-clean-build.warnings-all.txt",
+          "test-and-fix/core-build/xcodebuild-clean-build.warnings-non-cactus.txt",
+          "test-and-fix/core-build/build-health-snippet.txt"
+        ],
+        "warningCountNonCactus": 0,
+        "warningCountAll": 8
+      }
+    },
+    {
+      "id": "VAL-BH-002",
+      "title": "Clean build succeeds with zero errors",
+      "status": "pass",
+      "reason": "xcodebuild clean build exited 0 and log includes BUILD SUCCEEDED.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-clean-build.log",
+          "test-and-fix/core-build/xcodebuild-clean-build.exitcode",
+          "test-and-fix/core-build/build-health-snippet.txt"
+        ],
+        "exitCode": 0
+      }
+    },
+    {
+      "id": "VAL-REG-001",
+      "title": "Full test sweep \u2014 all tests pass",
+      "status": "pass",
+      "reason": "Combined test sweep passed: TacNetTests 121/0 failures and TacNetUITests 10/0 failures, command exit code 0.",
+      "evidence": {
+        "logRefs": [
+          "test-and-fix/core-build/xcodebuild-test-all.log",
+          "test-and-fix/core-build/xcodebuild-test-all.exitcode",
+          "test-and-fix/core-build/test-full-sweep-snippet.txt"
+        ],
+        "unitTestsExecuted": 121,
+        "uiTestsExecuted": 10,
+        "failures": 0,
+        "exitCode": 0
+      }
+    }
+  ],
+  "frictions": [
+    {
+      "description": "Default `xcodebuild test` under this scheme/test-plan ran only TacNetUITests (10 tests), so explicit `-only-testing` selectors were required to validate non-UI assertions and full sweep coverage.",
+      "resolved": true,
+      "resolution": "Ran `-only-testing:TacNetTests` for core assertions and `-only-testing:TacNetTests -only-testing:TacNetUITests` for full sweep evidence.",
+      "affectedAssertions": [
+        "VAL-MD-001",
+        "VAL-MD-002",
+        "VAL-MD-003",
+        "VAL-MD-004",
+        "VAL-MD-005",
+        "VAL-MD-006",
+        "VAL-MD-007",
+        "VAL-PTT-001",
+        "VAL-REG-001"
+      ]
+    }
+  ],
+  "blockers": [],
+  "summary": "Validated 11 assigned assertions: 11 passed, 0 failed, 0 blocked. Clean build succeeded (exit 0) with 0 non-cactus warnings; full test sweep passed (TacNetTests 121 + TacNetUITests 10, 0 failures)."
+}
