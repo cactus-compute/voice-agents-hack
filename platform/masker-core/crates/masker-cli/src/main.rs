@@ -6,6 +6,7 @@
 //!     masker --scenario healthcare    # only one scenario
 //!     masker --backend gemini --policy hipaa_clinical
 
+use std::io::{self, BufRead};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -17,7 +18,7 @@ use masker::backends::LocalCactusBackend;
 use masker::backends::{GeminiCloudBackend, GemmaBackend, StubBackend};
 use masker::{
     contracts::{DetectionResult, PolicyName, Route, TraceEvent, TraceStage},
-    MaskMode, Router, Tracer, VoiceLoop,
+    AudioChunk, MaskMode, Router, StreamingPipeline, Tracer, VoiceLoop,
 };
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -95,6 +96,36 @@ enum Command {
 
         #[arg(long, value_enum, default_value_t = CliPolicy::HipaaBase)]
         policy: CliPolicy,
+    },
+
+    /// Stream text lines through the full audio pipeline (STT stub → detect →
+    /// policy → mask → TTS stub → encrypted audit log).
+    ///
+    /// Reads one line of text per chunk from stdin (or --text for a single
+    /// chunk). Emits one JSON object per chunk to stdout. Encrypted audit
+    /// entries are printed to stderr as JSON lines.
+    ///
+    /// Example (interactive):
+    ///   echo "My SSN is 482-55-1234." | masker stream --session ses_001
+    ///
+    /// Example (batch):
+    ///   masker stream --text "Call John at 555-867-5309." --api-key msk_live_k9Xp_healthcare_prod
+    Stream {
+        /// Session identifier for audit grouping.
+        #[arg(long, default_value = "ses_cli")]
+        session: String,
+
+        /// Optional API key to select client policy. Defaults to HIPAA-base.
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Process a single text chunk instead of reading from stdin.
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Emit full audit entries (encrypted) to stderr as JSON lines.
+        #[arg(long, default_value_t = false)]
+        audit: bool,
     },
 }
 
@@ -394,6 +425,78 @@ fn run_command(command: Command) -> Result<i32> {
             let result = loop_.run_text_turn(&text, &tracer);
             println!("{}", serde_json::to_string(&result)?);
             Ok(0)
+        }
+
+        Command::Stream {
+            session,
+            api_key,
+            text,
+            audit,
+        } => {
+            let pipeline = StreamingPipeline::new_with_defaults();
+            let api_key_ref = api_key.as_deref();
+
+            // Collect lines: either the single --text arg or stdin lines.
+            let lines: Vec<String> = if let Some(t) = text {
+                vec![t]
+            } else {
+                let stdin = io::stdin();
+                stdin.lock().lines().collect::<Result<_, _>>()?
+            };
+
+            let mut failures = 0;
+            for (seq, line) in lines.iter().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let chunk = AudioChunk {
+                    seq: seq as u64,
+                    data: line.as_bytes().to_vec(),
+                    sample_rate: 16_000,
+                    duration_ms: 500,
+                };
+                match pipeline.process(&session, api_key_ref, &chunk) {
+                    Ok(result) => {
+                        let out = serde_json::json!({
+                            "seq": result.seq,
+                            "route": result.route.as_str(),
+                            "policy": result.policy.policy.as_str(),
+                            "entity_count": result.detection.entities.len(),
+                            "entity_types": result.detection.entities.iter()
+                                .map(|e| e.kind.as_str())
+                                .collect::<Vec<_>>(),
+                            "risk_level": result.detection.risk_level.as_str(),
+                            "masked_transcript": result.masked_transcript,
+                            "processing_ms": result.processing_ms,
+                            "trace": result.trace.iter().map(|e| serde_json::json!({
+                                "stage": e.stage.as_str(),
+                                "message": e.message,
+                                "elapsed_ms": e.elapsed_ms,
+                            })).collect::<Vec<_>>(),
+                        });
+                        println!("{}", out);
+
+                        if audit {
+                            // Audit entries are emitted to stderr so stdout
+                            // stays clean for piping to jq.
+                            eprintln!(
+                                "audit: seq={} route={} entities={} policy={}",
+                                result.seq,
+                                result.route.as_str(),
+                                result.detection.entities.len(),
+                                result.policy.policy.as_str(),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("stream error (seq={}): {e:#}", seq);
+                        failures += 1;
+                    }
+                }
+            }
+
+            Ok(if failures > 0 { 1 } else { 0 })
         }
     }
 }

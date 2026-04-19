@@ -21,6 +21,15 @@ pub fn decide(detection: &DetectionResult, policy_name: PolicyName) -> PolicyDec
         };
     }
 
+    // GDPR: mask all personal identifiers, allow non-personal context.
+    if matches!(policy_name, PolicyName::GdprBase) && detection.has_sensitive() {
+        return PolicyDecision {
+            route: Route::MaskedSend,
+            policy: policy_name,
+            rationale: "GDPR base: all personal data must be masked before forwarding.".to_string(),
+        };
+    }
+
     if matches!(policy_name, PolicyName::HipaaClinical) {
         if types.iter().any(|&t| is_high_risk_local_only(t)) {
             return PolicyDecision {

@@ -26,8 +26,12 @@
 //! - [`backends`]  — pluggable Gemma backends (`stub`, `gemini`, `cactus`)
 //! - [`voice_loop::VoiceLoop`] — orchestrates the full turn
 
+pub mod audio_pipeline;
+pub mod audit_logger;
 pub mod backends;
+pub mod client_registry;
 pub mod contracts;
+pub mod crypto;
 pub mod detection;
 pub mod masking;
 pub mod policy;
@@ -35,11 +39,17 @@ pub mod router;
 pub mod trace;
 pub mod voice_loop;
 
+pub use audio_pipeline::{
+    AudioChunk, AudioChunkResult, PipelineConfig, StubStt, StubTts, SttBackend, TtsBackend,
+};
+pub use audit_logger::{AdminSink, AuditEntry, AuditLogger, AuditRecord, InMemorySink, StdoutSink};
 pub use backends::{default_backend, GemmaBackend, StubBackend};
+pub use client_registry::{ClientConfig, ClientRegistry, Environment};
 pub use contracts::{
     DetectionResult, Entity, EntityType, MaskedText, PolicyDecision, PolicyName, Route, TraceEvent,
     TraceStage, TurnResult,
 };
+pub use crypto::{Dek, Kek, KeyStore, TokenVault};
 pub use masking::MaskMode;
 pub use router::{default_router, Router};
 pub use trace::Tracer;
@@ -58,4 +68,107 @@ pub fn filter_input(text: &str) -> (MaskedText, PolicyDecision, DetectionResult)
 /// Re-mask any sensitive content that leaked back through the LLM output.
 pub fn filter_output(model_text: &str, detection: &DetectionResult) -> String {
     masking::scrub_output(model_text, detection)
+}
+
+// ── StreamingPipeline ─────────────────────────────────────────────────────────
+
+use std::sync::Arc;
+
+/// High-level streaming pipeline that ties together:
+///   - Client key registry (API key → policy)
+///   - DEK/KEK key store (per-use-case encryption)
+///   - Token vault (reversible SSN/insurance_id tokenization)
+///   - Audio pipeline (STT → detect → policy → mask → TTS)
+///   - Encrypted audit logger (AuditRecord → DEK-encrypted → AdminSink)
+///
+/// Construct once per process; call `process` for each audio chunk.
+///
+/// ```no_run
+/// use masker::{StreamingPipeline, AudioChunk};
+///
+/// let pipeline = StreamingPipeline::new_with_defaults();
+/// let chunk = AudioChunk {
+///     seq: 0,
+///     data: b"My SSN is 482-55-1234.".to_vec(),
+///     sample_rate: 16_000,
+///     duration_ms: 500,
+/// };
+/// let result = pipeline.process("ses_001", None, &chunk).unwrap();
+/// println!("route: {:?}", result.route);
+/// ```
+pub struct StreamingPipeline {
+    registry: Arc<ClientRegistry>,
+    pipeline_cfg: audio_pipeline::PipelineConfig,
+    logger: AuditLogger,
+}
+
+impl StreamingPipeline {
+    /// Create a pipeline with stub STT/TTS, a fresh KEK, and an in-memory
+    /// audit sink. Suitable for testing and CLI demo.
+    pub fn new_with_defaults() -> Self {
+        let kek = Kek::generate();
+        let key_store = KeyStore::new(kek);
+        let token_vault = TokenVault::new();
+        let sink = InMemorySink::new();
+        let logger = AuditLogger::new(key_store.clone(), sink);
+        let pipeline_cfg = audio_pipeline::PipelineConfig {
+            stt: Arc::new(StubStt),
+            tts: Arc::new(StubTts),
+            key_store,
+            token_vault,
+        };
+        Self {
+            registry: Arc::new(ClientRegistry::with_defaults()),
+            pipeline_cfg,
+            logger,
+        }
+    }
+
+    /// Create a pipeline with a custom STT/TTS backend and admin sink.
+    pub fn new(
+        stt: Arc<dyn SttBackend>,
+        tts: Arc<dyn TtsBackend>,
+        kek: Kek,
+        sink: Arc<dyn AdminSink>,
+    ) -> Self {
+        let key_store = KeyStore::new(kek);
+        let token_vault = TokenVault::new();
+        let logger = AuditLogger::new(key_store.clone(), sink);
+        let pipeline_cfg = audio_pipeline::PipelineConfig {
+            stt,
+            tts,
+            key_store,
+            token_vault,
+        };
+        Self {
+            registry: Arc::new(ClientRegistry::with_defaults()),
+            pipeline_cfg,
+            logger,
+        }
+    }
+
+    /// Process one audio chunk.
+    ///
+    /// - `session_id`: caller-assigned session identifier (for audit grouping)
+    /// - `api_key`: optional client API key; falls back to HIPAA-base default
+    /// - `chunk`: the audio chunk to process
+    ///
+    /// Returns the `AudioChunkResult` and emits an encrypted `AuditEntry` to
+    /// the configured `AdminSink`.
+    pub fn process(
+        &self,
+        session_id: &str,
+        api_key: Option<&str>,
+        chunk: &AudioChunk,
+    ) -> anyhow::Result<AudioChunkResult> {
+        let client = self.registry.resolve(api_key);
+        let result = audio_pipeline::process_chunk(chunk, &client, &self.pipeline_cfg)?;
+        self.logger.log(session_id, &client, &result)?;
+        Ok(result)
+    }
+
+    /// Access the underlying client registry (e.g. to register new keys).
+    pub fn registry(&self) -> &ClientRegistry {
+        &self.registry
+    }
 }
