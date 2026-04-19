@@ -136,7 +136,19 @@ def _build_prompt(
 
     parts.append(f"Question: {transcript}")
     parts.append("Answer:")
-    return "\n".join(parts)
+    return _sanitize_for_argv("\n".join(parts))
+
+
+# Control chars we strip from prompts before they become argv. NUL is
+# fatal (execve rejects argv containing \x00 → "embedded null byte"),
+# and other C0 controls occasionally sneak in from PDF / binary-ish
+# chunks and confuse the CLI. We keep \t and \n since the prompt is
+# multi-line by design.
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_for_argv(text: str) -> str:
+    return _CTRL_CHARS_RE.sub("", text or "")
 
 
 def _hit_label(hit: Hit) -> str:
@@ -286,14 +298,56 @@ async def _call_gemini(prompt: str, api_key: str) -> str:
     return _clean_reply(raw)
 
 
+# ANSI escape sequences Cactus uses to colour its CLI output (telemetry,
+# separators, next-turn prompt). We strip them wholesale.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]"
+    r"|\x1b\][^\x07]*\x07"  # OSC sequences ending in BEL
+)
+
+# Everything after the first of these markers is CLI chrome for the next
+# interactive turn — not part of the model's reply. The telemetry markers
+# don't require a preceding newline because Cactus sometimes appends them
+# on the same line as the answer (`… audio resume. [14 tokens | …]`).
+_CLI_END_MARKERS_RE = re.compile(
+    r"(?:"
+    r"\s*\[\s*\d+\s+tokens?\s*\|"          # telemetry block "[14 tokens | …]"
+    r"|\s+\d+\s+tokens?\s*\|\s*latency"    # same, no bracket
+    r"|\n[-─=]{3,}"                         # separator line
+    r"|\nYou\s*:"                           # next-turn prompt
+    r"|\nlatency:\s*\d"                     # standalone latency line
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _clean_reply(raw: str) -> str:
-    text = (raw or "").strip()
-    # Strip model echoes of prompt scaffolding.
+    """Turn a raw `cactus run` stdout blob into a clean spoken answer.
+
+    Cactus emits, in order:
+        <ANSI colour> <the actual answer> <ANSI reset>
+        [<N> tokens | latency: … | … tok/s | RAM: … MB]
+        -------------------------------------------------
+        <ANSI colour> You: <next prompt>
+
+    We strip the colour codes, cut at the first CLI end-marker, and then
+    apply the same scaffolding-strip that was already there.
+    """
+    text = raw or ""
+    # 1) Drop ANSI colour/CSI/OSC sequences.
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    # 2) Cut at the first Cactus CLI end-marker (telemetry / separator /
+    #    next-turn prompt). Anything after the answer is noise.
+    m = _CLI_END_MARKERS_RE.search(text)
+    if m:
+        text = text[: m.start()]
+    text = text.strip()
+    # 3) Strip markdown code fences the model sometimes adds.
     text = re.sub(r"^```(?:json|text)?|```$", "", text, flags=re.MULTILINE).strip()
-    # Some Cactus builds prepend the prompt — drop up to the first "Answer:" line.
+    # 4) Some Cactus builds prepend the prompt — drop up to "Answer:".
     if "Answer:" in text:
         text = text.split("Answer:", 1)[1].strip()
-    # Clip to two sentences for spoken output.
+    # 5) Spoken: first two sentences only.
     sentences = re.split(r"(?<=[.!?])\s+", text)
     if len(sentences) > 2:
         text = " ".join(sentences[:2])
