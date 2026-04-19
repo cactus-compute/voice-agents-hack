@@ -119,8 +119,11 @@ actor CactusTranscriber: CactusTranscribing {
     }
 
     func transcribePCM16kMono(_ pcmData: Data) async throws -> String {
+        NSLog("[STT] Loading model via %@", String(describing: type(of: modelHandleProvider)))
         let modelHandle = try await modelHandleProvider.provideModelHandle()
+        NSLog("[STT] Model handle acquired, transcribing %d bytes of PCM audio", pcmData.count)
         let responseJSON = try transcribeFunction(modelHandle, pcmData)
+        NSLog("[STT] Raw response: %@", responseJSON.prefix(200).description)
         return Self.extractTranscript(from: responseJSON)
     }
 

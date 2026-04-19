@@ -1257,6 +1257,22 @@ public actor ModelDownloadService {
             return false
         }
 
+        // Verify the extraction produced a meaningful number of weight files.
+        // A truncated or corrupt extraction may leave the sentinel in place
+        // but with missing or zero-byte weight files, causing cactusInit to
+        // crash with "Cannot map file". Require at least 500 .weights files
+        // (the Gemma 4 model has ~2076).
+        if let contents = try? fileManager.contentsOfDirectory(atPath: modelDirectoryURL.path) {
+            let weightsCount = contents.filter { ($0 as NSString).pathExtension == "weights" }.count
+            if weightsCount < 500 {
+                NSLog("[ModelDownload] ⚠️ Integrity check failed — only %d .weights files found (expected 2000+), forcing re-download", weightsCount)
+                try? fileManager.removeItem(at: modelDirectoryURL)
+                try? fileManager.removeItem(at: modelFileURL)
+                userDefaults.set(false, forKey: completionKey)
+                return false
+            }
+        }
+
         userDefaults.set(true, forKey: completionKey)
         return true
     }
