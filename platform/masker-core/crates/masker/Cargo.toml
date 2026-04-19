@@ -28,6 +28,12 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 ureq = { workspace = true }
 libloading = { version = "0.8", optional = true }
+# Crypto — AES-256-GCM for DEK/KEK envelope encryption
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

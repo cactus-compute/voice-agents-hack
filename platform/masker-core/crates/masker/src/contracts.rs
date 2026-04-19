@@ -85,6 +85,7 @@ pub enum PolicyName {
     HipaaBase,
     HipaaLogging,
     HipaaClinical,
+    GdprBase,
 }
 
 impl PolicyName {
@@ -93,6 +94,7 @@ impl PolicyName {
             PolicyName::HipaaBase => "hipaa_base",
             PolicyName::HipaaLogging => "hipaa_logging",
             PolicyName::HipaaClinical => "hipaa_clinical",
+            PolicyName::GdprBase => "gdpr_base",
         }
     }
 }
