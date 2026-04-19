@@ -1,19 +1,22 @@
 //! End-to-end voice / text loop. Mirrors
 //! `platform/masker-library/masker/voice_loop.py`.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::contracts::{PolicyName, TraceStage, TurnResult};
+use crate::detection::{Detector, RegexDetector};
 use crate::masking::MaskMode;
 use crate::payload;
 use crate::router::Router;
 use crate::trace::Tracer;
-use crate::{detection, masking, policy};
+use crate::{masking, policy};
 
 pub struct VoiceLoop {
     pub router: Router,
     pub policy_name: PolicyName,
     pub mask_mode: MaskMode,
+    pub detector: Arc<dyn Detector>,
 }
 
 impl VoiceLoop {
@@ -22,6 +25,7 @@ impl VoiceLoop {
             router,
             policy_name: PolicyName::HipaaBase,
             mask_mode: MaskMode::Placeholder,
+            detector: Arc::new(RegexDetector),
         }
     }
 
@@ -32,6 +36,11 @@ impl VoiceLoop {
 
     pub fn with_mask_mode(mut self, m: MaskMode) -> Self {
         self.mask_mode = m;
+        self
+    }
+
+    pub fn with_detector(mut self, detector: Arc<dyn Detector>) -> Self {
+        self.detector = detector;
         self
     }
 
@@ -46,7 +55,7 @@ impl VoiceLoop {
                 "Scanning input for PII/PHI",
                 payload! {},
             );
-            detection::detect(text)
+            self.detector.detect(text)
         };
         tracer.event(
             TraceStage::Detection,

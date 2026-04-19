@@ -169,7 +169,11 @@ impl Dek {
     pub fn generate(use_case: &str) -> Self {
         let key = generate_key_bytes();
         Self {
-            id: format!("dek_{}_{}", use_case.replace(' ', "_"), &hex::encode(&key[..4])),
+            id: format!(
+                "dek_{}_{}",
+                use_case.replace(' ', "_"),
+                &hex::encode(&key[..4])
+            ),
             key,
         }
     }
@@ -190,8 +194,8 @@ impl Dek {
 
     /// Encrypt a JSON-serialisable value.
     pub fn encrypt_json<T: Serialize>(&self, value: &T) -> Result<String, CryptoError> {
-        let json = serde_json::to_vec(value)
-            .map_err(|e| CryptoError::Encrypt(format!("json: {e}")))?;
+        let json =
+            serde_json::to_vec(value).map_err(|e| CryptoError::Encrypt(format!("json: {e}")))?;
         self.encrypt(&json)
     }
 
@@ -201,8 +205,7 @@ impl Dek {
         ciphertext_b64: &str,
     ) -> Result<T, CryptoError> {
         let bytes = self.decrypt(ciphertext_b64)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| CryptoError::Decrypt(format!("json: {e}")))
+        serde_json::from_slice(&bytes).map_err(|e| CryptoError::Decrypt(format!("json: {e}")))
     }
 }
 

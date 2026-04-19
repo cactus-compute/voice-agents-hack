@@ -4,7 +4,7 @@
 //!
 //!   AudioChunk
 //!     → SttBackend::transcribe()   — raw bytes → transcript text
-//!     → detection::scan()          — detect PII/PHI entities
+//!     → Detector::detect_with_audio() — detect PII/PHI entities
 //!     → policy::decide()           — apply client policy → route decision
 //!     → masking::mask()            — mask/redact entities; tokenize via vault
 //!     → TtsBackend::synthesise()   — masked text → audio bytes
@@ -25,6 +25,9 @@ use crate::contracts::{
 use crate::crypto::{KeyStore, TokenVault};
 use crate::{detection, masking, policy};
 
+#[cfg(feature = "cactus")]
+use crate::cactus_sdk::CactusModel;
+
 // ── Audio types ───────────────────────────────────────────────────────────────
 
 /// A raw audio chunk from the microphone or network stream.
@@ -36,6 +39,8 @@ pub struct AudioChunk {
     pub seq: u64,
     /// Raw audio bytes (or UTF-8 text bytes when using StubStt).
     pub data: Vec<u8>,
+    /// Optional path to a normalized audio file for audio-aware detectors.
+    pub source_path: Option<String>,
     /// Sample rate in Hz (informational).
     pub sample_rate: u32,
     /// Duration in milliseconds (informational).
@@ -99,11 +104,83 @@ impl TtsBackend for StubTts {
     }
 }
 
+#[cfg(feature = "cactus")]
+pub struct CactusSttBackend {
+    model: CactusModel,
+    prompt: Option<String>,
+    options_json: Option<String>,
+}
+
+#[cfg(feature = "cactus")]
+impl CactusSttBackend {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let model_path = std::env::var("CACTUS_STT_MODEL_PATH").map_err(|_| {
+            anyhow::anyhow!("cactus stt backend unavailable: CACTUS_STT_MODEL_PATH missing")
+        })?;
+        let model = CactusModel::new(&model_path)
+            .map_err(|e| anyhow::anyhow!("cactus stt backend unavailable: {e}"))?;
+
+        let prompt = std::env::var("CACTUS_STT_PROMPT")
+            .ok()
+            .or_else(|| default_stt_prompt(&model_path));
+        let use_vad = std::env::var("CACTUS_STT_USE_VAD")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        let options_json = Some(
+            serde_json::json!({
+                "custom_vocabulary": ["HIPAA", "SSN", "MRN", "PHI", "PII"],
+                "vocabulary_boost": 4.0,
+                "use_vad": use_vad
+            })
+            .to_string(),
+        );
+
+        Ok(Self {
+            model,
+            prompt,
+            options_json,
+        })
+    }
+}
+
+#[cfg(feature = "cactus")]
+fn default_stt_prompt(model_path: &str) -> Option<String> {
+    let normalized = model_path.to_ascii_lowercase();
+    if normalized.contains("whisper") {
+        Some("<|startoftranscript|><|en|><|transcribe|>".to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "cactus")]
+impl SttBackend for CactusSttBackend {
+    fn transcribe(&self, audio: &[u8]) -> anyhow::Result<String> {
+        let envelope = self
+            .model
+            .transcribe_pcm(audio, self.prompt.as_deref(), self.options_json.as_deref())
+            .map_err(|e| anyhow::anyhow!("cactus transcribe failed: {e}"))?;
+
+        let transcript = envelope.response.trim().to_string();
+        if transcript.is_empty() {
+            anyhow::bail!("cactus transcribe returned an empty transcript");
+        }
+        Ok(transcript)
+    }
+}
+
 // ── Pipeline config ───────────────────────────────────────────────────────────
 
 pub struct PipelineConfig {
     pub stt: Arc<dyn SttBackend>,
     pub tts: Arc<dyn TtsBackend>,
+    pub detector: Arc<dyn detection::Detector>,
     pub key_store: Arc<KeyStore>,
     pub token_vault: Arc<TokenVault>,
 }
@@ -143,7 +220,9 @@ pub fn process_chunk(
     ));
 
     // ── Stage 2: Detection ────────────────────────────────────────────────────
-    let detection = detection::detect(&raw_transcript);
+    let detection = config
+        .detector
+        .detect_with_audio(&raw_transcript, chunk.source_path.as_deref());
     trace.push(event(
         TraceStage::Detection,
         format!(
@@ -181,7 +260,9 @@ pub fn process_chunk(
 
     // Vault tokenization: for SSN and insurance_id, replace the placeholder
     // with a stable vault token so the original can be rehydrated later.
-    let dek = config.key_store.dek_for(&client.use_case)
+    let dek = config
+        .key_store
+        .dek_for(&client.use_case)
         .map_err(|e| anyhow::anyhow!("key store: {e}"))?;
 
     for entity in &detection.entities {
@@ -205,10 +286,14 @@ pub fn process_chunk(
         format!(
             "Masked {} spans; {} vault tokens (dek={})",
             masked.token_map.len(),
-            detection.entities.iter().filter(|e| {
-                use crate::contracts::EntityType;
-                matches!(e.kind, EntityType::Ssn | EntityType::InsuranceId)
-            }).count(),
+            detection
+                .entities
+                .iter()
+                .filter(|e| {
+                    use crate::contracts::EntityType;
+                    matches!(e.kind, EntityType::Ssn | EntityType::InsuranceId)
+                })
+                .count(),
             dek.id
         ),
         t0.elapsed().as_secs_f64() * 1000.0,
@@ -277,6 +362,7 @@ mod tests {
         PipelineConfig {
             stt: Arc::new(StubStt),
             tts: Arc::new(StubTts),
+            detector: Arc::new(detection::RegexDetector),
             key_store: KeyStore::new(kek),
             token_vault: TokenVault::new(),
         }
@@ -286,6 +372,7 @@ mod tests {
         AudioChunk {
             seq,
             data: text.as_bytes().to_vec(),
+            source_path: None,
             sample_rate: 16_000,
             duration_ms: 500,
         }
@@ -295,7 +382,12 @@ mod tests {
     fn safe_query_passes_through() {
         let cfg = make_config();
         let client = ClientRegistry::with_defaults().resolve(None);
-        let result = process_chunk(&chunk(0, "What are the clinic hours on Saturday?"), &client, &cfg).unwrap();
+        let result = process_chunk(
+            &chunk(0, "What are the clinic hours on Saturday?"),
+            &client,
+            &cfg,
+        )
+        .unwrap();
         assert_eq!(result.route, Route::SafeToSend);
         assert_eq!(result.detection.entities.len(), 0);
         assert_eq!(result.audio_out, b"What are the clinic hours on Saturday?");
@@ -315,7 +407,12 @@ mod tests {
         let cfg = make_config();
         let client = ClientRegistry::with_defaults().resolve(None);
         // Email is reliably detected as a sensitive entity → masked-send.
-        let result = process_chunk(&chunk(2, "Please email sarah@example.com about the appointment."), &client, &cfg).unwrap();
+        let result = process_chunk(
+            &chunk(2, "Please email sarah@example.com about the appointment."),
+            &client,
+            &cfg,
+        )
+        .unwrap();
         assert_eq!(result.route, Route::MaskedSend);
         assert!(!result.masked_transcript.contains("sarah@example.com"));
         assert!(!result.audio_out.is_empty());
@@ -326,7 +423,12 @@ mod tests {
         let cfg = make_config();
         let client = ClientRegistry::with_defaults().resolve(Some("msk_live_a7Yz_clinical_prod"));
         assert_eq!(client.policy, crate::contracts::PolicyName::HipaaClinical);
-        let result = process_chunk(&chunk(3, "Patient SSN 319-44-8821 has chest pain."), &client, &cfg).unwrap();
+        let result = process_chunk(
+            &chunk(3, "Patient SSN 319-44-8821 has chest pain."),
+            &client,
+            &cfg,
+        )
+        .unwrap();
         assert_eq!(result.route, Route::LocalOnly);
     }
 

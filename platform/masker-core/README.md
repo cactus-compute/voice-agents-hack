@@ -86,6 +86,15 @@ cargo run --release -p masker-cli -- --json
 # one scenario, with the strict HIPAA policy
 cargo run --release -p masker-cli -- \
     --scenario healthcare --policy hipaa-clinical
+
+# download the recommended local models once
+cactus download openai/whisper-small
+cactus download google/gemma-4-E2B-it
+
+# macOS live audio smoke test (records 5s from the default mic)
+export CACTUS_STT_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/whisper-small"
+export CACTUS_DETECTION_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/gemma-4-e2b-it"
+cargo run --release --features cactus -p masker-cli -- live --seconds 5
 ```
 
 Sample output (trimmed):
@@ -117,10 +126,56 @@ masker filter-input --text "My SSN is 123-45-6789" --policy hipaa-base
 masker filter-output --text "Sure, I saw 123-45-6789" \
   --detection-json '{"entities":[{"type":"ssn","value":"123-45-6789","start":10,"end":21,"confidence":0.9}],"risk_level":"high"}'
 masker run-turn --text "I have chest pain and MRN 99812" --backend auto --policy hipaa-clinical
+masker live --audio-file /tmp/sample.wav
 ```
 
 That lets us keep one fast privacy engine while still offering a Python-first
 adoption path.
+
+## Live audio testing with Cactus
+
+`masker live` is a thin wrapper around the streaming pipeline. It:
+
+1. records raw PCM with `ffmpeg` or normalizes an existing audio file
+2. transcribes locally with Cactus STT
+3. runs detection with a Cactus-backed classifier when configured
+4. falls back to regex detection if the model path is missing or inference fails
+5. applies the existing policy, masking, routing, and trace pipeline
+
+```bash
+# record 5 seconds from the default microphone and print JSON
+export CACTUS_STT_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/whisper-small"
+cargo run --release --features cactus -p masker-cli -- live --seconds 5
+
+# interactive microphone mode, stops on Enter and prints the final transcript
+cargo run --release --features cactus -p masker-cli -- live --interactive
+
+# optionally enable model-backed detection; regex stays as the fallback
+export CACTUS_DETECTION_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/gemma-4-e2b-it"
+
+# use a prerecorded clip instead of recording
+cargo run --release --features cactus -p masker-cli -- \
+  live --audio-file /tmp/sample.wav
+```
+
+Notes:
+
+- This path currently records with `ffmpeg -f avfoundation`, so the microphone
+  capture step is macOS-oriented.
+- File-based testing works anywhere `ffmpeg` works.
+- `CACTUS_STT_MODEL_PATH` is required for live transcription. `openai/whisper-small`
+  is the recommended default for this repo.
+- Detection uses `CACTUS_DETECTION_MODEL_PATH`, then `CACTUS_MODEL_PATH`, and
+  otherwise drops to the built-in regex detector. `google/gemma-4-E2B-it` is
+  the recommended local audio-aware detector model.
+- `--interactive` mirrors the `cactus transcribe` UX more closely: it lists
+  microphones, listens until Enter, prints the final transcript, and still
+  emits the structured JSON result for SDK wrappers.
+- If the default mic is not the first AVFoundation device, list inputs with:
+
+```bash
+ffmpeg -f avfoundation -list_devices true -i ""
+```
 
 ---
 
@@ -157,15 +212,16 @@ Three backends ship in-tree, all behind the `GemmaBackend` trait:
 | ---------------------- | ------------ | ----------------------------- | ---------------------------- |
 | `StubBackend`          | (default)    | nothing                       | tests, CI, screen-recordings |
 | `GeminiCloudBackend`   | (default)    | `GEMINI_API_KEY`              | cloud fallback, comparisons  |
-| `LocalCactusBackend`   | `cactus`     | `libcactus.dylib` + weights   | the real on-device path      |
+| `LocalCactusBackend`   | `cactus`     | local Cactus checkout + weights | the real on-device path    |
 
-The Cactus backend opens `libcactus` at runtime via `libloading`, so a fresh
-checkout still builds with `cargo build` even on a machine with no Cactus
-install. To enable it once you have Cactus built locally:
+The Cactus backend is wired through the sibling Rust FFI crate at
+`../cactus/rust/cactus-sys`. Default builds still work without it because the
+integration is feature-gated. To enable the on-device path once you have the
+local Cactus checkout and weights:
 
 ```bash
-export CACTUS_LIB_DIR=/path/to/cactus/build      # contains libcactus.dylib
-export CACTUS_MODEL_PATH=/path/to/functiongemma-270m-it.gguf
+export CACTUS_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/gemma-4-e2b-it"
+export CACTUS_STT_MODEL_PATH="$(brew --prefix cactus)/libexec/weights/whisper-small"
 cargo run --release --features cactus -p masker-cli -- --backend cactus
 ```
 

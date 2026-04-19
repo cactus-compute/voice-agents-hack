@@ -6,9 +6,24 @@
 //!     masker --scenario healthcare    # only one scenario
 //!     masker --backend gemini --policy hipaa_clinical
 
+#[cfg(feature = "cactus")]
+use std::env;
+#[cfg(feature = "cactus")]
+use std::fs;
+#[cfg(feature = "cactus")]
+use std::io::Write;
 use std::io::{self, BufRead};
+#[cfg(feature = "cactus")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
+#[cfg(feature = "cactus")]
+use std::process::{Command as ProcessCommand, Stdio};
+#[cfg(feature = "cactus")]
+use std::sync::Arc;
 use std::time::Instant;
+#[cfg(feature = "cactus")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -18,7 +33,7 @@ use masker::backends::LocalCactusBackend;
 use masker::backends::{GeminiCloudBackend, GemmaBackend, StubBackend};
 use masker::{
     contracts::{DetectionResult, PolicyName, Route, TraceEvent, TraceStage},
-    AudioChunk, MaskMode, Router, StreamingPipeline, Tracer, VoiceLoop,
+    AudioChunk, AudioChunkResult, MaskMode, Router, StreamingPipeline, Tracer, VoiceLoop,
 };
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -127,6 +142,55 @@ enum Command {
         #[arg(long, default_value_t = false)]
         audit: bool,
     },
+
+    /// Record live audio, transcribe it with Cactus STT, and run the result
+    /// through the Masker streaming pipeline with model-backed detection plus
+    /// regex fallback.
+    ///
+    /// Example:
+    ///   masker live --seconds 5
+    ///
+    /// Example (existing clip, no recording step):
+    ///   masker live --audio-file /tmp/sample.wav
+    Live {
+        /// Session identifier for audit grouping.
+        #[arg(long, default_value = "ses_live")]
+        session: String,
+
+        /// Optional API key to select client policy. Defaults to HIPAA-base.
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Use an existing audio file instead of recording from the mic.
+        #[arg(long)]
+        audio_file: Option<PathBuf>,
+
+        /// How long to record from the mic when --audio-file is not provided.
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+
+        /// Record from the microphone until Enter is pressed.
+        #[arg(long, default_value_t = false)]
+        interactive: bool,
+
+        /// Raw ffmpeg avfoundation input selector for the microphone.
+        #[arg(long, default_value = ":0")]
+        input: String,
+
+        /// Override the STT model path for this run. Falls back to
+        /// CACTUS_STT_MODEL_PATH.
+        #[arg(long)]
+        stt_model_path: Option<String>,
+
+        /// Override the detection model path for this run. Falls back to
+        /// CACTUS_DETECTION_MODEL_PATH, then CACTUS_MODEL_PATH.
+        #[arg(long)]
+        detection_model_path: Option<String>,
+
+        /// Keep the captured raw PCM file on disk after processing.
+        #[arg(long, default_value_t = false)]
+        keep_audio: bool,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -181,6 +245,329 @@ const SCENARIOS: &[Scenario] = &[
         expected_route: Route::MaskedSend,
     },
 ];
+
+fn stream_result_json(result: &AudioChunkResult) -> serde_json::Value {
+    serde_json::json!({
+        "seq": result.seq,
+        "raw_transcript": result.raw_transcript,
+        "route": result.route.as_str(),
+        "policy": result.policy.policy.as_str(),
+        "entity_count": result.detection.entities.len(),
+        "entity_types": result
+            .detection
+            .entities
+            .iter()
+            .map(|e| e.kind.as_str())
+            .collect::<Vec<_>>(),
+        "risk_level": result.detection.risk_level.as_str(),
+        "masked_transcript": result.masked_transcript,
+        "processing_ms": result.processing_ms,
+        "trace": result
+            .trace
+            .iter()
+            .map(|e| serde_json::json!({
+                "stage": e.stage.as_str(),
+                "message": e.message,
+                "elapsed_ms": e.elapsed_ms,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn process_stream_chunk(
+    pipeline: &StreamingPipeline,
+    session: &str,
+    api_key: Option<&str>,
+    seq: u64,
+    text: &str,
+) -> Result<AudioChunkResult> {
+    let chunk = AudioChunk {
+        seq,
+        data: text.as_bytes().to_vec(),
+        source_path: None,
+        sample_rate: 16_000,
+        duration_ms: 500,
+    };
+    pipeline
+        .process(session, api_key, &chunk)
+        .map_err(|e| anyhow!("stream error (seq={seq}): {e:#}"))
+}
+
+#[cfg(feature = "cactus")]
+fn default_live_artifact_path(ext: &str) -> PathBuf {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    env::temp_dir().join(format!("masker-live-{}-{millis}.{ext}", std::process::id()))
+}
+
+#[cfg(feature = "cactus")]
+fn record_audio_with_ffmpeg(output_path: &Path, seconds: u64, input: &str) -> Result<()> {
+    let output = ProcessCommand::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "avfoundation", "-i", input])
+        .args([
+            "-t",
+            &seconds.to_string(),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+        ])
+        .arg(output_path)
+        .output()
+        .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "ffmpeg recording failed. If the default mic is not device 0, run `ffmpeg -f avfoundation -list_devices true -i \"\"` to inspect inputs.\n{}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cactus")]
+fn record_audio_until_enter_with_ffmpeg(output_path: &Path, input: &str) -> Result<()> {
+    let mut child = ProcessCommand::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "avfoundation", "-i", input])
+        .args(["-ac", "1", "-ar", "16000", "-f", "s16le"])
+        .arg(output_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
+
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| anyhow!("failed to read Enter key: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"q\n");
+        let _ = stdin.flush();
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| anyhow!("failed waiting for ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "ffmpeg recording failed. If the default mic is not device 0, run `ffmpeg -f avfoundation -list_devices true -i \"\"` to inspect inputs.\n{}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cactus")]
+fn list_avfoundation_audio_inputs() -> Result<Vec<(usize, String)>> {
+    let output = ProcessCommand::new("ffmpeg")
+        .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
+        .output()
+        .map_err(|e| anyhow!("failed to list ffmpeg devices: {e}"))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut devices = Vec::new();
+    let mut in_audio_section = false;
+
+    for line in stderr.lines() {
+        if line.contains("AVFoundation audio devices") {
+            in_audio_section = true;
+            continue;
+        }
+        if line.contains("AVFoundation video devices") {
+            in_audio_section = false;
+            continue;
+        }
+        if !in_audio_section {
+            continue;
+        }
+
+        let Some(open) = line.find('[') else {
+            continue;
+        };
+        let Some(close) = line[open + 1..].find(']') else {
+            continue;
+        };
+        let idx = &line[open + 1..open + 1 + close];
+        let Ok(index) = idx.parse::<usize>() else {
+            continue;
+        };
+        let name = line[open + close + 2..].trim().to_string();
+        if !name.is_empty() {
+            devices.push((index, name));
+        }
+    }
+
+    Ok(devices)
+}
+
+#[cfg(feature = "cactus")]
+fn normalize_audio_to_pcm(input_file: &Path, output_path: &Path) -> Result<()> {
+    let output = ProcessCommand::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(input_file)
+        .args(["-ac", "1", "-ar", "16000", "-f", "s16le"])
+        .arg(output_path)
+        .output()
+        .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "ffmpeg audio normalization failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cactus")]
+fn normalize_audio_to_wav(input_file: &Path, output_path: &Path) -> Result<()> {
+    let output = ProcessCommand::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(input_file)
+        .args(["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .arg(output_path)
+        .output()
+        .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "ffmpeg wav normalization failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cactus")]
+fn pcm_to_wav(input_pcm: &Path, output_wav: &Path) -> Result<()> {
+    let output = ProcessCommand::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(["-f", "s16le", "-ar", "16000", "-ac", "1", "-i"])
+        .arg(input_pcm)
+        .args(["-c:a", "pcm_s16le"])
+        .arg(output_wav)
+        .output()
+        .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "ffmpeg pcm->wav conversion failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cactus")]
+fn pcm_duration_ms(bytes_len: usize) -> u32 {
+    ((bytes_len as f64 / 32_000.0) * 1000.0).round() as u32
+}
+
+#[cfg(feature = "cactus")]
+#[derive(Debug, Clone, Copy)]
+struct PcmSignalStats {
+    sample_count: usize,
+    peak_abs: i16,
+    rms: f32,
+}
+
+#[cfg(feature = "cactus")]
+struct LiveDetectionStatus {
+    engine: &'static str,
+    model_path: Option<String>,
+    fallback: &'static str,
+    active: bool,
+    init_error: Option<String>,
+}
+
+#[cfg(feature = "cactus")]
+fn pcm_signal_stats(bytes: &[u8]) -> PcmSignalStats {
+    let mut sample_count = 0usize;
+    let mut peak_abs = 0i16;
+    let mut sum_squares = 0f64;
+
+    for chunk in bytes.chunks_exact(2) {
+        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+        let abs = sample.saturating_abs();
+        peak_abs = peak_abs.max(abs);
+        sum_squares += f64::from(sample) * f64::from(sample);
+        sample_count += 1;
+    }
+
+    let rms = if sample_count == 0 {
+        0.0
+    } else {
+        (sum_squares / sample_count as f64).sqrt() as f32
+    };
+
+    PcmSignalStats {
+        sample_count,
+        peak_abs,
+        rms,
+    }
+}
+
+#[cfg(feature = "cactus")]
+fn build_live_pipeline() -> Result<(StreamingPipeline, LiveDetectionStatus)> {
+    let stt = Arc::new(masker::CactusSttBackend::from_env()?);
+    let tts = Arc::new(masker::StubTts);
+    let requested_model_path = std::env::var("CACTUS_DETECTION_MODEL_PATH")
+        .ok()
+        .or_else(|| std::env::var("CACTUS_MODEL_PATH").ok());
+
+    let (detector, detection_status): (Arc<dyn masker::Detector>, LiveDetectionStatus) =
+        match masker::CactusFallbackDetector::from_env() {
+            Ok(detector) => (
+                Arc::new(detector),
+                LiveDetectionStatus {
+                    engine: "cactus-audio-first+regex-fallback",
+                    model_path: requested_model_path,
+                    fallback: "regex",
+                    active: true,
+                    init_error: None,
+                },
+            ),
+            Err(err) => (
+                Arc::new(masker::RegexDetector),
+                LiveDetectionStatus {
+                    engine: "regex-fallback-only",
+                    model_path: requested_model_path,
+                    fallback: "regex",
+                    active: false,
+                    init_error: Some(err.to_string()),
+                },
+            ),
+        };
+
+    let pipeline = StreamingPipeline::new(
+        stt,
+        tts,
+        detector,
+        masker::Kek::generate(),
+        masker::InMemorySink::new(),
+    );
+
+    Ok((pipeline, detection_status))
+}
 
 fn build_backend(b: Backend) -> Result<Box<dyn GemmaBackend>> {
     Ok(match b {
@@ -450,32 +837,9 @@ fn run_command(command: Command) -> Result<i32> {
                 if line.is_empty() {
                     continue;
                 }
-                let chunk = AudioChunk {
-                    seq: seq as u64,
-                    data: line.as_bytes().to_vec(),
-                    sample_rate: 16_000,
-                    duration_ms: 500,
-                };
-                match pipeline.process(&session, api_key_ref, &chunk) {
+                match process_stream_chunk(&pipeline, &session, api_key_ref, seq as u64, line) {
                     Ok(result) => {
-                        let out = serde_json::json!({
-                            "seq": result.seq,
-                            "route": result.route.as_str(),
-                            "policy": result.policy.policy.as_str(),
-                            "entity_count": result.detection.entities.len(),
-                            "entity_types": result.detection.entities.iter()
-                                .map(|e| e.kind.as_str())
-                                .collect::<Vec<_>>(),
-                            "risk_level": result.detection.risk_level.as_str(),
-                            "masked_transcript": result.masked_transcript,
-                            "processing_ms": result.processing_ms,
-                            "trace": result.trace.iter().map(|e| serde_json::json!({
-                                "stage": e.stage.as_str(),
-                                "message": e.message,
-                                "elapsed_ms": e.elapsed_ms,
-                            })).collect::<Vec<_>>(),
-                        });
-                        println!("{}", out);
+                        println!("{}", stream_result_json(&result));
 
                         if audit {
                             // Audit entries are emitted to stderr so stdout
@@ -490,13 +854,187 @@ fn run_command(command: Command) -> Result<i32> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("stream error (seq={}): {e:#}", seq);
+                        eprintln!("{e:#}");
                         failures += 1;
                     }
                 }
             }
 
             Ok(if failures > 0 { 1 } else { 0 })
+        }
+        Command::Live {
+            session,
+            api_key,
+            audio_file,
+            seconds,
+            interactive,
+            input,
+            stt_model_path,
+            detection_model_path,
+            keep_audio,
+        } => {
+            #[cfg(not(feature = "cactus"))]
+            {
+                let _ = (
+                    session,
+                    api_key,
+                    audio_file,
+                    seconds,
+                    interactive,
+                    input,
+                    stt_model_path,
+                    detection_model_path,
+                    keep_audio,
+                );
+                return Err(anyhow!(
+                    "`masker live` requires the `cactus` feature; rebuild with `cargo run --features cactus -p masker-cli -- live ...`"
+                ));
+            }
+
+            #[cfg(feature = "cactus")]
+            {
+                if let Some(path) = stt_model_path {
+                    std::env::set_var("CACTUS_STT_MODEL_PATH", path);
+                }
+                if let Some(path) = detection_model_path {
+                    std::env::set_var("CACTUS_DETECTION_MODEL_PATH", path);
+                }
+
+                let recorded_here = audio_file.is_none();
+                if interactive && !recorded_here {
+                    return Err(anyhow!(
+                        "`--interactive` cannot be combined with `--audio-file`"
+                    ));
+                }
+                let pcm_path = default_live_artifact_path("pcm");
+                let wav_path = default_live_artifact_path("wav");
+
+                if recorded_here {
+                    if interactive {
+                        if let Some(model_path) = std::env::var("CACTUS_STT_MODEL_PATH").ok() {
+                            eprintln!("Model weights found at {model_path}");
+                        }
+                        if let Ok(devices) = list_avfoundation_audio_inputs() {
+                            if !devices.is_empty() {
+                                eprintln!("Available microphones:");
+                                for (index, name) in devices {
+                                    eprintln!("  [{index}] {name}");
+                                }
+                                eprintln!();
+                            }
+                        }
+                        eprintln!("============================================================");
+                        eprintln!("     🌵 MASKER LIVE TRANSCRIPTION 🌵");
+                        eprintln!("============================================================");
+                        eprintln!("Listening... Press Enter to stop");
+                        eprintln!("------------------------------------------------------------");
+                        record_audio_until_enter_with_ffmpeg(&pcm_path, &input)?;
+                    } else {
+                        eprintln!(
+                            "recording {} second(s) from {} -> {}",
+                            seconds,
+                            input,
+                            pcm_path.display()
+                        );
+                        record_audio_with_ffmpeg(&pcm_path, seconds, &input)?;
+                    }
+                    pcm_to_wav(&pcm_path, &wav_path)?;
+                } else {
+                    let source = audio_file
+                        .as_ref()
+                        .expect("audio_file must exist when recorded_here is false");
+                    if !source.is_file() {
+                        return Err(anyhow!("audio file not found: {}", source.display()));
+                    }
+                    normalize_audio_to_pcm(source, &pcm_path)?;
+                    normalize_audio_to_wav(source, &wav_path)?;
+                }
+
+                let pcm_bytes = fs::read(&pcm_path).map_err(|e| {
+                    anyhow!("failed to read captured audio {}: {e}", pcm_path.display())
+                })?;
+                let duration_ms = pcm_duration_ms(pcm_bytes.len());
+                let signal = pcm_signal_stats(&pcm_bytes);
+                let chunk = AudioChunk {
+                    seq: 0,
+                    data: pcm_bytes,
+                    source_path: Some(wav_path.display().to_string()),
+                    sample_rate: 16_000,
+                    duration_ms,
+                };
+
+                let (pipeline, detection_status) = build_live_pipeline()?;
+                let started = Instant::now();
+                let result = pipeline
+                    .process(&session, api_key.as_deref(), &chunk)
+                    .map_err(|e| {
+                        let base = format!("live audio processing failed: {e:#}");
+                        let details = format!(
+                            "pcm_path={} duration_ms={} samples={} peak_abs={} rms={:.1}",
+                            pcm_path.display(),
+                            duration_ms,
+                            signal.sample_count,
+                            signal.peak_abs,
+                            signal.rms
+                        );
+
+                        if e.to_string().contains("empty transcript") {
+                            anyhow!(
+                                "{base}\n{details}\nCactus STT heard no usable speech. This usually means the mic capture was silent, the wrong AVFoundation input is selected, or speech started too late.\nTry:\n  1. Speak immediately and increase the window: `--seconds 8`\n  2. List devices: `ffmpeg -f avfoundation -list_devices true -i \"\"`\n  3. Retry with a different mic, for example `--input \":1\"`\n  4. Inspect the captured audio: `ffmpeg -f s16le -ar 16000 -ac 1 -i {pcm} /tmp/masker-live.wav`\n  5. Re-run STT against that file: `cargo run -q -p masker-cli --features cactus -- live --audio-file /tmp/masker-live.wav`",
+                                pcm = pcm_path.display(),
+                            )
+                        } else {
+                            anyhow!("{base}\n{details}")
+                        }
+                    })?;
+                let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+                let out = serde_json::json!({
+                    "session": session,
+                    "audio": {
+                        "mode": if recorded_here { "live" } else { "file" },
+                        "source_path": audio_file.as_ref().map(|p| p.display().to_string()),
+                        "pcm_path": pcm_path.display().to_string(),
+                        "wav_path": wav_path.display().to_string(),
+                        "retained": keep_audio,
+                        "input": if recorded_here { Some(input) } else { None::<String> },
+                        "recorded_seconds": if recorded_here { Some(seconds) } else { None::<u64> },
+                        "duration_ms": duration_ms,
+                        "sample_count": signal.sample_count,
+                        "peak_abs": signal.peak_abs,
+                        "rms": signal.rms,
+                    },
+                    "stt": {
+                        "engine": "cactus_transcribe",
+                        "model_path": std::env::var("CACTUS_STT_MODEL_PATH").ok(),
+                    },
+                    "detection": {
+                        "engine": detection_status.engine,
+                        "model_path": detection_status.model_path,
+                        "fallback": detection_status.fallback,
+                        "active": detection_status.active,
+                        "init_error": detection_status.init_error,
+                    },
+                    "elapsed_ms": total_ms,
+                    "transcript": result.raw_transcript,
+                    "result": stream_result_json(&result),
+                });
+                if interactive {
+                    eprintln!();
+                    eprintln!("------------------------------------------------------------");
+                    eprintln!("Final transcript:");
+                    eprintln!("{}", result.raw_transcript);
+                    eprintln!("------------------------------------------------------------");
+                }
+                println!("{}", serde_json::to_string(&out)?);
+
+                if !keep_audio {
+                    let _ = fs::remove_file(&pcm_path);
+                    let _ = fs::remove_file(&wav_path);
+                }
+
+                Ok(0)
+            }
         }
     }
 }

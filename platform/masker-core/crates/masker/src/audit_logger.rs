@@ -178,11 +178,7 @@ impl AuditLogger {
 
     /// Decrypt an audit entry back to its plaintext record.
     /// Requires the DEK for the entry's use case.
-    pub fn decrypt_entry(
-        &self,
-        entry: &AuditEntry,
-        use_case: &str,
-    ) -> anyhow::Result<AuditRecord> {
+    pub fn decrypt_entry(&self, entry: &AuditEntry, use_case: &str) -> anyhow::Result<AuditRecord> {
         let dek = self
             .key_store
             .dek_for(use_case)
@@ -282,6 +278,7 @@ mod tests {
         let cfg = PipelineConfig {
             stt: Arc::new(StubStt),
             tts: Arc::new(StubTts),
+            detector: Arc::new(crate::detection::RegexDetector),
             key_store: key_store.clone(),
             token_vault: TokenVault::new(),
         };
@@ -296,6 +293,7 @@ mod tests {
         let chunk = AudioChunk {
             seq: 0,
             data: b"What are the clinic hours?".to_vec(),
+            source_path: None,
             sample_rate: 16_000,
             duration_ms: 500,
         };
@@ -312,6 +310,7 @@ mod tests {
         let chunk = AudioChunk {
             seq: 0,
             data: b"My SSN is 482-55-1234.".to_vec(),
+            source_path: None,
             sample_rate: 16_000,
             duration_ms: 500,
         };
@@ -321,7 +320,10 @@ mod tests {
         let entry = sink.entries().into_iter().next().unwrap();
         // The plaintext entry must not contain the raw SSN.
         let entry_json = serde_json::to_string(&entry).unwrap();
-        assert!(!entry_json.contains("482-55-1234"), "raw SSN leaked into audit entry");
+        assert!(
+            !entry_json.contains("482-55-1234"),
+            "raw SSN leaked into audit entry"
+        );
         // The encrypted_record field must be non-empty base64.
         assert!(!entry.encrypted_record.is_empty());
     }
@@ -335,6 +337,7 @@ mod tests {
         let chunk = AudioChunk {
             seq: 1,
             data: b"Please email sarah@example.com about the appointment.".to_vec(),
+            source_path: None,
             sample_rate: 16_000,
             duration_ms: 500,
         };
@@ -359,6 +362,7 @@ mod tests {
         let chunk = AudioChunk {
             seq: 2,
             data: b"My SSN is 482-55-1234.".to_vec(),
+            source_path: None,
             sample_rate: 16_000,
             duration_ms: 500,
         };

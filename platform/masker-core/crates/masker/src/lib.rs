@@ -29,6 +29,8 @@
 pub mod audio_pipeline;
 pub mod audit_logger;
 pub mod backends;
+#[cfg(feature = "cactus")]
+pub mod cactus_sdk;
 pub mod client_registry;
 pub mod contracts;
 pub mod crypto;
@@ -39,8 +41,10 @@ pub mod router;
 pub mod trace;
 pub mod voice_loop;
 
+#[cfg(feature = "cactus")]
+pub use audio_pipeline::CactusSttBackend;
 pub use audio_pipeline::{
-    AudioChunk, AudioChunkResult, PipelineConfig, StubStt, StubTts, SttBackend, TtsBackend,
+    AudioChunk, AudioChunkResult, PipelineConfig, SttBackend, StubStt, StubTts, TtsBackend,
 };
 pub use audit_logger::{AdminSink, AuditEntry, AuditLogger, AuditRecord, InMemorySink, StdoutSink};
 pub use backends::{default_backend, GemmaBackend, StubBackend};
@@ -50,6 +54,9 @@ pub use contracts::{
     TraceStage, TurnResult,
 };
 pub use crypto::{Dek, Kek, KeyStore, TokenVault};
+#[cfg(feature = "cactus")]
+pub use detection::CactusFallbackDetector;
+pub use detection::{Detector, RegexDetector};
 pub use masking::MaskMode;
 pub use router::{default_router, Router};
 pub use trace::Tracer;
@@ -90,6 +97,7 @@ use std::sync::Arc;
 /// let chunk = AudioChunk {
 ///     seq: 0,
 ///     data: b"My SSN is 482-55-1234.".to_vec(),
+///     source_path: None,
 ///     sample_rate: 16_000,
 ///     duration_ms: 500,
 /// };
@@ -114,6 +122,7 @@ impl StreamingPipeline {
         let pipeline_cfg = audio_pipeline::PipelineConfig {
             stt: Arc::new(StubStt),
             tts: Arc::new(StubTts),
+            detector: Arc::new(detection::RegexDetector),
             key_store,
             token_vault,
         };
@@ -128,6 +137,7 @@ impl StreamingPipeline {
     pub fn new(
         stt: Arc<dyn SttBackend>,
         tts: Arc<dyn TtsBackend>,
+        detector: Arc<dyn detection::Detector>,
         kek: Kek,
         sink: Arc<dyn AdminSink>,
     ) -> Self {
@@ -137,6 +147,7 @@ impl StreamingPipeline {
         let pipeline_cfg = audio_pipeline::PipelineConfig {
             stt,
             tts,
+            detector,
             key_store,
             token_vault,
         };
@@ -145,6 +156,33 @@ impl StreamingPipeline {
             pipeline_cfg,
             logger,
         }
+    }
+
+    #[cfg(feature = "cactus")]
+    pub fn new_with_cactus_defaults() -> anyhow::Result<Self> {
+        let kek = Kek::generate();
+        let key_store = KeyStore::new(kek);
+        let token_vault = TokenVault::new();
+        let sink = InMemorySink::new();
+        let logger = AuditLogger::new(key_store.clone(), sink);
+        let detector: Arc<dyn detection::Detector> =
+            match detection::CactusFallbackDetector::from_env() {
+                Ok(detector) => Arc::new(detector),
+                Err(_) => Arc::new(detection::RegexDetector),
+            };
+        let pipeline_cfg = audio_pipeline::PipelineConfig {
+            stt: Arc::new(audio_pipeline::CactusSttBackend::from_env()?),
+            tts: Arc::new(StubTts),
+            detector,
+            key_store,
+            token_vault,
+        };
+
+        Ok(Self {
+            registry: Arc::new(ClientRegistry::with_defaults()),
+            pipeline_cfg,
+            logger,
+        })
     }
 
     /// Process one audio chunk.

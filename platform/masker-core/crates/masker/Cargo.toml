@@ -12,10 +12,9 @@ rust-version.workspace = true
 default = []
 # Enable real Gemini cloud backend (HTTP). Pulls in ureq.
 gemini = []
-# Enable in-process Cactus FFI backend. Requires the cactus shared library
-# to be built and `CACTUS_LIB_DIR` set so the linker can find -lcactus.
-# Off by default so `cargo build` works on a fresh checkout.
-cactus = ["dep:libloading"]
+# Enable Cactus integration through the local Rust FFI crate in the sibling
+# `../cactus` checkout described in the hackathon setup README.
+cactus = ["dep:cactus-sys"]
 
 [dependencies]
 serde = { workspace = true }
@@ -27,7 +26,7 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 ureq = { workspace = true }
-libloading = { version = "0.8", optional = true }
+cactus-sys = { path = "../../../../../cactus/rust/cactus-sys", optional = true }
 # Crypto — AES-256-GCM for DEK/KEK envelope encryption
 aes-gcm = "0.10"
 rand = "0.8"
