@@ -34,7 +34,7 @@ if (process.argv[2] === 'setup') {
 
 
 /**
- * Hanzi Browse MCP Server
+ * Browser sub-agent MCP server
  *
  * MCP transport + session wrapper for the extension-side browser agent.
  * The Chrome extension owns browser execution; this server forwards tasks,
@@ -612,7 +612,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // --- Startup ---
 
 async function main() {
-  console.error("[MCP] Starting Hanzi Browse MCP Server v2.0...");
+  console.error("[MCP] Starting browser sub-agent MCP server v2.0...");
 
   connection = new WebSocketClient({
     role: "mcp",

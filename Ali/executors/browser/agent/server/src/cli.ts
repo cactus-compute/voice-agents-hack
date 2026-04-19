@@ -579,7 +579,7 @@ function cmdVersion(): void {
 
 function cmdHelp(): void {
   console.log(`
-Hanzi Browser CLI - Browser automation from the command line
+Browser sub-agent CLI
 
 Controls your real Chrome browser with your existing logins, cookies, and
 sessions. Good for authenticated sites, dynamic pages, and multi-step tasks

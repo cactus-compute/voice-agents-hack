@@ -1,5 +1,5 @@
 /**
- * Canonical exit codes for the Hanzi Browse CLI.
+ * Canonical exit codes for the browser sub-agent CLI.
  *
  * Agents and scripts rely on these to detect outcomes without parsing stdout.
  */

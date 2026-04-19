@@ -546,4 +546,4 @@ window.__clearRefMappings = function() {
 };
 
 // Expose for debugging
-console.log('[Hanzi Browse] Accessibility tree generator loaded');
+console.log('[browser-agent] Accessibility tree generator loaded');

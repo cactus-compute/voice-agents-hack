@@ -209,55 +209,11 @@
     return el;
   }
 
-  // Create "Powered by Hanzi Browse" badge (top-right corner)
-  function createPoweredByBadge(taskId) {
-    const el = document.createElement('div');
-    el.id = 'hanzi-powered-badge';
-
-    const shortId = taskId ? taskId.slice(0, 8) : '';
-    el.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" style="width:14px;height:14px;flex-shrink:0;vertical-align:middle">
-        <rect width="24" height="24" rx="6" fill="#1a1a1a"/>
-        <path d="M7 7v10M17 7v10M7 12h10" stroke="#fafaf8" stroke-width="2.5" stroke-linecap="round"/>
-      </svg>
-      <span style="vertical-align:middle;margin-left:6px">Powered by <a href="https://browse.hanzilla.co" target="_blank" style="color:#ad5a34;text-decoration:none;font-weight:600">Hanzi Browse</a></span>
-      ${shortId ? `<span style="vertical-align:middle;margin-left:8px;opacity:0.5;cursor:pointer;font-family:monospace;font-size:11px" title="Click to copy task ID" id="hanzi-task-id">${shortId}</span>` : ''}
-    `;
-
-    el.style.cssText = `
-      position: fixed;
-      top: 42px;
-      right: 16px;
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 12px;
-      background: #FAF9F5;
-      border: 0.5px solid rgba(31, 30, 29, 0.2);
-      border-radius: 10px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-      z-index: 2147483647;
-      pointer-events: auto;
-      white-space: nowrap;
-      user-select: none;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 12px;
-      color: #6d6256;
-      opacity: 0;
-      transition: opacity 0.3s ease-in-out;
-    `;
-
-    // Copy task ID on click
-    const idEl = el.querySelector('#hanzi-task-id');
-    if (idEl && taskId) {
-      idEl.addEventListener('click', () => {
-        navigator.clipboard.writeText(taskId).then(() => {
-          idEl.textContent = 'copied!';
-          setTimeout(() => { idEl.textContent = shortId; }, 1500);
-        });
-      });
-    }
-
-    return el;
+  // Branded "Powered by" badge removed for this build. Return null so the
+  // call site below skips creating/appending the overlay entirely.
+  // eslint-disable-next-line no-unused-vars
+  function createPoweredByBadge(_taskId) {
+    return null;
   }
 
   // Show the pulsing glow indicator
@@ -279,10 +235,13 @@
       stopContainer.style.display = '';
     }
 
-    // Show powered-by badge
+    // Show powered-by badge (disabled in this build — createPoweredByBadge
+    // returns null and we skip the append entirely).
     if (!poweredByBadge) {
       poweredByBadge = createPoweredByBadge(currentTaskId);
-      document.body.appendChild(poweredByBadge);
+      if (poweredByBadge) {
+        document.body.appendChild(poweredByBadge);
+      }
     } else {
       poweredByBadge.style.display = '';
     }
@@ -430,5 +389,5 @@
     hideStaticIndicator();
   });
 
-  console.log('[Hanzi Browse] Visual indicator script loaded');
+  console.log('[browser-agent] Visual indicator script loaded');
 })();

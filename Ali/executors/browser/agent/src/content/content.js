@@ -835,4 +835,4 @@ window.addEventListener('message', (event) => {
 // Also broadcast once on load (for pages that loaded before the listener was set up)
 window.postMessage({ type: 'HANZI_EXTENSION_READY' }, '*');
 
-console.log('[Hanzi Browse] Content script loaded');
+console.log('[browser-agent] Content script loaded');

@@ -1,5 +1,5 @@
 /**
- * Service Worker - Hanzi Browse
+ * Service Worker — browser sub-agent
  *
  * Orchestrates browser automation by:
  * 1. Receiving tasks from the sidepanel
@@ -1973,5 +1973,5 @@ void restoreMcpSessions();
 // Start usage tracking session
 startSession();
 
-console.log('[Hanzi Browse] Service worker loaded');
-console.log('[Hanzi Browse] MCP bridge initialized');
+console.log('[browser-agent] Service worker loaded');
+console.log('[browser-agent] MCP bridge initialized');

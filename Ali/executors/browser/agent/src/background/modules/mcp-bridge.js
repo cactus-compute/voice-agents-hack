@@ -835,7 +835,7 @@ async function handleMcpCommand(command) {
           }
         }
 
-        // Show "Powered by Hanzi Browse" overlay on the session tab
+        // Session-tab overlay
         try {
           await chrome.tabs.sendMessage(tabId, { type: 'SHOW_AGENT_INDICATORS', taskId: command.taskId || requestId });
         } catch { /* content script may not be ready yet */ }

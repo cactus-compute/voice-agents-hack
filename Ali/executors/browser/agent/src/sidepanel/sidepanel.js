@@ -1,5 +1,5 @@
 /**
- * Side Panel - Chat interface for Hanzi Browse
+ * Side Panel - browser sub-agent chat
  */
 
 // Provider configurations
