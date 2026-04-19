@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+venv/
+.venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.so
+*.dylib
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Cactus model weights are pulled via `cactus download`; never commit
+weights/
+
+# Node / UI
+node_modules/
+platform/masker-admin/dist/
+platform/masker-admin/.vite/

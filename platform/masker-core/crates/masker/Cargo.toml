@@ -1,0 +1,33 @@
+[package]
+name = "masker"
+description = "On-device PII/PHI middleware for voice agents — Rust port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Enable real Gemini cloud backend (HTTP). Pulls in ureq.
+gemini = []
+# Enable in-process Cactus FFI backend. Requires the cactus shared library
+# to be built and `CACTUS_LIB_DIR` set so the linker can find -lcactus.
+# Off by default so `cargo build` works on a fresh checkout.
+cactus = ["dep:libloading"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+ureq = { workspace = true }
+libloading = { version = "0.8", optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

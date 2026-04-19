@@ -42,3 +42,15 @@ Prizes per special track:
 1. Read Cactus docs carefully: [Link](https://docs.cactuscompute.com/latest/)
 2. Read Gemma 4 on Cactus walkthrough carefully: [Link](https://docs.cactuscompute.com/latest/blog/gemma4/)
 3. Cactus & DeepMind team would be available on-site. 
+
+## Repository Layout
+
+```text
+platform/
+  masker-core/      # Rust runtime and CLI
+  masker-admin/     # demo and trace UI
+  masker-library/   # Python SDK, integration package, tests, and env samples
+```
+
+This keeps the product surfaces grouped together instead of splitting the repo
+by language-specific top-level folders.

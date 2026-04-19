@@ -1,0 +1,203 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #020817;
+  color: #e2e8f0;
+  font-family: Inter, system-ui, sans-serif;
+  min-height: 100vh;
+  display: block;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: #0a0f1e;
+  border-bottom: 1px solid #1e293b;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-logo {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.app-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: -0.01em;
+}
+
+.app-subtitle {
+  font-size: 0.75rem;
+  color: #475569;
+  margin-top: 2px;
+}
+
+.app-pipeline {
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.app-pipeline strong {
+  color: #818cf8;
+}
+
+/* ── Body ── */
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: #080d1a;
+  border-right: 1px solid #1e293b;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.sidebar-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #334155;
+  padding: 4px 4px 6px;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: #1e293b;
+  margin: 8px 0;
+}
+
+.scenario-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 10px 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+  color: #94a3b8;
+}
+
+.scenario-btn:hover {
+  background: #0f172a;
+  border-color: #1e293b;
+}
+
+.scenario-btn.active {
+  background: #0f172a;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+.scenario-btn-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+/* ── Flow diagram ── */
+.flow-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 4px;
+}
+
+.flow-step {
+  font-size: 0.78rem;
+  color: #475569;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.flow-step.highlight {
+  color: #818cf8;
+  background: #1e1b4b33;
+  font-weight: 600;
+}
+
+.flow-arrow {
+  font-size: 0.75rem;
+  color: #1e293b;
+  padding-left: 12px;
+}
+
+/* ── Main panel ── */
+.main-panel {
+  flex: 1;
+  padding: 24px 28px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.main-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.main-panel-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: -0.01em;
+}
+
+/* ── Footer ── */
+.app-footer {
+  padding: 10px 24px;
+  font-size: 0.7rem;
+  color: #1e293b;
+  border-top: 1px solid #0f172a;
+  text-align: center;
+  flex-shrink: 0;
+}
