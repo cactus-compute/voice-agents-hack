@@ -22,6 +22,15 @@ CACTUS_API_KEY = os.environ.get("CACTUS_API_KEY", "")
 # ── Cactus / Gemma 4 ─────────────────────────────────────────────────────────
 CACTUS_GEMMA4_MODEL = "google/gemma-4-E2B-it"
 
+# ── Cactus VL (browser sub-agent) ────────────────────────────────────────────
+# The browser sub-agent runs inside a Chrome extension whose LLM is configured
+# via chrome.storage.local. scripts/cactus_server.py is the HTTP sidecar the
+# extension talks to when provider='cactus'; the AI Studio path (default) is
+# used when provider='google'.
+CACTUS_VL_MODEL    = os.getenv("CACTUS_VL_MODEL",    "google/gemma-4-E2B-it")
+CACTUS_SIDECAR_URL = os.getenv("CACTUS_SIDECAR_URL", "http://127.0.0.1:8765")
+AGENT_NODE_BIN     = os.getenv("AGENT_NODE_BIN",     "node")
+
 # ── Whisper fallback ──────────────────────────────────────────────────────────
 WHISPER_MODEL_SIZE = "base.en"   # tiny.en | base.en | small.en
 

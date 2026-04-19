@@ -20,10 +20,14 @@ class Orchestrator:
     def __init__(self):
         from executors.local.applescript import AppleScriptExecutor
         from executors.local.filesystem import FilesystemExecutor
+        from executors.browser.agent_client import LocalAgentClient
 
         self._local_fs = FilesystemExecutor()
         self._local_as = AppleScriptExecutor()
-        self._browser = None
+        # Browser sub-agent. Spawns the vendored MCP server lazily on first use;
+        # we don't await connect here so startup stays snappy if no browser
+        # goal is requested.
+        self._browser_agent = LocalAgentClient()
 
     async def run(self, intent: IntentObject):
         if intent.goal == KnownGoal.UNKNOWN:
@@ -142,29 +146,56 @@ class Orchestrator:
             print(f"[orchestrator] Done: {state.goal}")
 
     async def _execute_action(self, intent: IntentObject, action: NextAction, data: dict):
-        if action.action_type == "navigate":
-            return await self._run_browser("navigate", {"url": action.params["url"]})
-        if action.action_type == "upload_file":
-            if action.params.get("mode") != "yc_apply_fill":
-                raise ValueError("Unsupported upload_file mode")
-            resume_path = data.get("resume_path")
-            if not resume_path:
-                resume_path = self._local_fs.find_by_alias("resume")
-            await self._run_browser(
-                "yc_apply_fill",
-                {"resume_path": resume_path, "slots": data.get("slots", {})},
-            )
-            return {"resume_path": resume_path, "yc_form_filled": True}
-        if action.action_type == "click_text":
-            if action.params.get("mode") != "yc_apply_submit":
-                raise ValueError("Unsupported click_text mode")
-            return await self._run_browser("yc_apply_submit", {})
+        if action.action_type == "browser_task":
+            task_text = self._resolve_task_slots(action.params.get("task", ""), data)
+            return await self._run_browser_agent(task_text)
         if action.action_type == "ask_user":
             approved = await ask_confirmation(action.params.get("question", action.reason))
             return {"user_confirmed": approved}
-        if action.action_type in {"wait_for_text", "scroll", "click_selector", "type_selector"}:
-            return {"noop_action": action.action_type}
         raise ValueError(f"Unsupported action_type: {action.action_type}")
+
+    def _resolve_task_slots(self, task: str, data: dict) -> str:
+        """Substitute ${resume}, ${contact_X}, etc. with local values. The
+        planner emits placeholders so sensitive data never hits the LLM that
+        generates the task string."""
+        # Resume: resolve lazily
+        if "${resume}" in task:
+            resume_path = data.get("resume_path") or self._local_fs.find_by_alias("resume")
+            task = task.replace("${resume}", resume_path or "")
+            data["resume_path"] = resume_path
+        # Any ${contact_NAME}
+        import re as _re
+        for match in _re.findall(r"\$\{contact_([A-Za-z0-9_]+)\}", task):
+            address = self._local_as.resolve_contact(match.replace("_", " "))
+            task = task.replace(f"${{contact_{match}}}", address or "")
+        return task
+
+    async def _run_browser_agent(self, task: str) -> dict:
+        """Hand a natural-language task to the browser sub-agent. The sub-agent
+        owns the agent loop (navigation, DOM reading, tool calls) and returns
+        a terminal TaskStatus. We surface awaiting_confirmation back to the
+        user, relay their choice, and continue until terminal."""
+        print(f"[orchestrator] browser_task → sub-agent: {task[:120]}...")
+        handle = await self._browser_agent.run_task(task=task, session_id="local")
+        if handle.state in ("error", "cancelled", "timeout"):
+            raise RuntimeError(handle.error or f"sub-agent {handle.state}")
+
+        while True:
+            status = await self._browser_agent.poll_until_paused_or_terminal(handle.id)
+            if status.state == "awaiting_confirmation":
+                summary = status.confirmation.summary if status.confirmation else "Proceed?"
+                payload = status.confirmation.payload if status.confirmation else {}
+                detail = "\n".join(f"  {k}: {v}" for k, v in (payload or {}).items())
+                approved = await ask_confirmation(f"{summary}\n{detail}\n\nProceed?")
+                await self._browser_agent.send_message(handle.id, "yes, proceed" if approved else "no, cancel")
+                if not approved:
+                    return {"aborted_by_user": True}
+                continue
+            if status.state == "complete":
+                print(f"[orchestrator] browser_task complete: {status.answer}")
+                return {"browser_answer": status.answer or "done"}
+            if status.state in ("error", "cancelled", "timeout"):
+                raise RuntimeError(status.error or f"sub-agent {status.state}")
 
     async def _run_local(self, action: str, params: dict):
         if action == "find_file":
@@ -186,32 +217,12 @@ class Orchestrator:
             return {}
         raise ValueError(f"Unknown local action: {action}")
 
-    async def _run_browser(self, action: str, params: dict):
-        if self._browser is None:
-            try:
-                from executors.browser.browser import BrowserExecutor
-            except ModuleNotFoundError as e:
-                raise RuntimeError(
-                    "Browser executor is unavailable. Install Playwright to run browser actions."
-                ) from e
-            self._browser = BrowserExecutor()
-
-        if action == "navigate":
-            await self._browser.navigate(params["url"])
-            return {}
-        if action == "yc_apply_fill":
-            await self._browser.yc_apply_fill(params["resume_path"], params.get("slots", {}))
-            return {}
-        if action == "yc_apply_submit":
-            await self._browser.yc_apply_submit()
-            return {}
-        if action == "capture_observation":
-            return await self._browser.capture_observation(label=params.get("label", "browser"))
-        raise ValueError(f"Unknown browser action: {action}")
-
     async def _observe(self, intent: IntentObject, label: str) -> dict:
+        """Observation for the outer planner. For browser goals we return a
+        minimal scope marker — the sub-agent is responsible for seeing the
+        page itself. For desktop goals we capture a screenshot via AppleScript."""
         if intent.requires_browser:
-            return await self._run_browser("capture_observation", {"label": label})
+            return {"scope": "browser", "label": label}
         return self._local_as.capture_observation(label=label)
 
     def _is_dry_run_skip_action(self, action: NextAction) -> bool:

@@ -46,17 +46,17 @@ class OrchestratorContractTests(unittest.TestCase):
 
     def test_visual_action_schema_requires_confirmation_for_irreversible(self):
         action = NextAction(
-            action_type="click_text",
+            action_type="browser_task",
             reason="submit",
             expected_outcome="submitted",
             safety_level="irreversible",
             confirm_required=False,
-            params={},
+            params={"task": "submit the form"},
         )
         with self.assertRaises(ValueError):
             action.validate()
 
-    def test_visual_fallback_apply_first_step_navigates(self):
+    def test_visual_fallback_apply_delegates_to_browser_task(self):
         intent = _rule_based_parse("apply to YC with my resume")
         action = _fallback_action(
             intent=intent,
@@ -64,8 +64,11 @@ class OrchestratorContractTests(unittest.TestCase):
             collected_data={"slots": intent.slots},
             step_index=0,
         )
-        self.assertEqual(action.action_type, "navigate")
-        self.assertEqual(action.params.get("url"), "https://apply.ycombinator.com")
+        # Browser goals are handed off to the browser sub-agent in one shot
+        # via action_type=browser_task. The sub-agent owns per-step navigation.
+        self.assertEqual(action.action_type, "browser_task")
+        self.assertIn("task", action.params)
+        self.assertTrue(action.params["task"])  # non-empty task description
 
 
 if __name__ == "__main__":

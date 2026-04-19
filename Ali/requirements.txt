@@ -19,8 +19,13 @@ faster-whisper>=1.0.0
 # Intent parsing — Gemini API (fast text inference; audio STT stays on-device)
 google-genai>=1.0.0
 
-# Browser automation
-playwright>=1.44.0
+# Browser sub-agent: Python talks to a vendored Chrome extension over MCP stdio.
+# fastapi/uvicorn power the local Cactus sidecar (scripts/cactus_server.py).
+# mcp is the Python client library for the MCP protocol used to reach the
+# vendored Node server in executors/browser/agent/server.
+fastapi>=0.115.0
+uvicorn>=0.30.0
+mcp>=1.0.0
 
 # macOS menu bar
 rumps>=0.4.0

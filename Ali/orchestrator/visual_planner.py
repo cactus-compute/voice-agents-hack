@@ -16,13 +16,13 @@ from config.settings import CACTUS_GEMMA4_MODEL
 from intent.schema import IntentObject, KnownGoal
 
 ALLOWED_ACTION_TYPES = {
-    "navigate",
-    "click_text",
-    "click_selector",
-    "type_selector",
-    "upload_file",
-    "scroll",
-    "wait_for_text",
+    # Delegates a complete browser task (e.g. "go to example.com and tell me the
+    # title") to the browser sub-agent. The planner should emit ONE of these
+    # for any browser goal — the sub-agent handles navigation, DOM reading,
+    # form filling, and multi-step flows autonomously on the user's real
+    # Chrome. See executors/browser/agent_client.py.
+    "browser_task",
+    # Local / UI actions. Kept for non-browser goals (iMessage, Mail, Calendar).
     "ask_user",
     "complete",
     "abort",
@@ -102,13 +102,29 @@ async def _choose_with_cactus(
 
 def _build_prompt(intent: IntentObject, observation: dict[str, Any], collected_data: dict[str, Any]) -> str:
     return (
-        "You are a strict action planner for a local desktop voice agent.\n"
-        "Based on the goal, current observation, and state data, return exactly one JSON object.\n"
-        "Allowed action_type: navigate, click_text, click_selector, type_selector, upload_file, "
-        "scroll, wait_for_text, ask_user, complete, abort.\n"
-        "Required fields: action_type, reason, expected_outcome, safety_level, confirm_required, params.\n"
+        "You are the planner for a local desktop voice agent. You delegate work\n"
+        "to tools. Return exactly one JSON object.\n"
+        "\n"
+        "Allowed action_type:\n"
+        "  - browser_task: delegate a browser task to the browser sub-agent.\n"
+        "      Use for any goal that needs a web browser (apply to a job,\n"
+        "      send LinkedIn DM, read Gmail, check a site, etc.).\n"
+        "      params.task must be a complete natural-language task description\n"
+        "      with concrete targets (URLs, form fields, message body). Use\n"
+        "      ${slot} placeholders for resume path, contact name, etc.\n"
+        "      Example params: {\\\"task\\\": \\\"Go to apply.ycombinator.com,\n"
+        "      fill the Fall 2026 application using ${resume}, and pause for\n"
+        "      confirmation before clicking Submit.\\\"}\n"
+        "  - ask_user: need more info from the user. params.question required.\n"
+        "  - complete: task finished successfully.\n"
+        "  - abort: cannot proceed. params.reason should explain why.\n"
+        "\n"
+        "Required fields: action_type, reason, expected_outcome, safety_level,\n"
+        "confirm_required, params.\n"
         "safety_level must be safe or irreversible.\n"
         "If action is irreversible, confirm_required must be true.\n"
+        "For browser_task, set safety_level=irreversible when the task sends,\n"
+        "submits, posts, or books; confirm_required=true in that case.\n"
         "Output only JSON.\n\n"
         f"intent_goal={intent.goal.value}\n"
         f"intent_target={json.dumps(intent.target, ensure_ascii=True)}\n"
@@ -141,51 +157,23 @@ def _fallback_action(
     url = (observation.get("url") or "").lower()
     scope = observation.get("scope", "")
 
-    if intent.goal == KnownGoal.APPLY_TO_JOB:
-        if "apply.ycombinator.com" not in url:
-            return NextAction(
-                action_type="navigate",
-                reason="Ensure browser is at YC Apply before form actions.",
-                expected_outcome="YC Apply page is open.",
-                safety_level="safe",
-                confirm_required=False,
-                params={"url": "https://apply.ycombinator.com"},
-            )
-        if not collected_data.get("yc_form_filled"):
-            return NextAction(
-                action_type="upload_file",
-                reason="Run YC form fill phase using known slots and resume.",
-                expected_outcome="Known fields become populated.",
-                safety_level="safe",
-                confirm_required=False,
-                params={"mode": "yc_apply_fill"},
-            )
-        return NextAction(
-            action_type="click_text",
-            reason="Submit application once form fill stage completed.",
-            expected_outcome="YC submission completes.",
-            safety_level="irreversible",
-            confirm_required=True,
-            params={"text": "Submit", "mode": "yc_apply_submit"},
+    if intent.requires_browser:
+        slot_hint = ""
+        if "resume" in intent.uses_local_data:
+            slot_hint = " Use ${resume} to reference the user's resume file."
+        base_task = intent.raw_transcript or "Complete the user request."
+        target_json = json.dumps(intent.target, ensure_ascii=True)
+        slots_json = json.dumps(intent.slots, ensure_ascii=True)
+        task_text = (
+            f"{base_task} Target: {target_json}. Slots: {slots_json}.{slot_hint}"
         )
-
-    if intent.goal == KnownGoal.SEND_MESSAGE:
-        if not collected_data.get("contact_resolved"):
-            return NextAction(
-                action_type="ask_user",
-                reason="Resolve contact before drafting a send action.",
-                expected_outcome="Contact address available.",
-                safety_level="safe",
-                confirm_required=False,
-                params={"question": "Resolve contact via local contacts now?"},
-            )
         return NextAction(
-            action_type="abort",
-            reason="Generic fallback does not send messages automatically.",
-            expected_outcome="Wait for explicit user command.",
-            safety_level="safe",
-            confirm_required=False,
-            params={},
+            action_type="browser_task",
+            reason="Delegate to browser sub-agent — fallback path.",
+            expected_outcome="Browser sub-agent completes the task and returns a final answer.",
+            safety_level="irreversible" if intent.requires_submission else "safe",
+            confirm_required=bool(intent.requires_submission),
+            params={"task": task_text},
         )
 
     if scope == "desktop" and step_index == 0:

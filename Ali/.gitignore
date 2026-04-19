@@ -10,3 +10,9 @@ build/
 .DS_Store
 *.wav
 *.tmp
+
+# Node (vendored browser sub-agent)
+node_modules/
+package-lock.json.bak
+executors/browser/agent/server/dist/
+executors/browser/agent/dist/
