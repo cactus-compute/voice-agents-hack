@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Aurora",
+    "slug": "aurora",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "aurora",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0B0F2C",
+      "resizeMode": "contain"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "ai.aurora.therapy",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Aurora listens to your voice so it can respond as a calming companion. Audio is processed entirely on this device.",
+        "NSSpeechRecognitionUsageDescription": "Aurora transcribes your voice on-device so it can respond as a calming companion. Speech never leaves your phone.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "ai.aurora.therapy",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F2C"
+      }
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Aurora listens to your voice so it can respond as a calming companion. Audio is processed entirely on this device.",
+          "speechRecognitionPermission": "Aurora transcribes your voice on-device so it can respond as a calming companion. Speech never leaves your phone."
+        }
+      ]
+    ]
+  }
+}
