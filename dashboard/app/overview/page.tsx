@@ -2,21 +2,32 @@ import { PageShell } from "@/components/layout/PageShell";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { Button } from "@/components/ui/Button";
-import {
-  OVERVIEW_METRICS,
-  SESSION_VOLUME,
-  TOP_ENTITY_TYPES,
-  RECENT_INCIDENTS,
-  AUDIT_REPORTS,
-} from "@/lib/mock-data";
 import { ArrowRight, Download, Plus, Upload } from "lucide-react";
 import Link from "next/link";
-
-// Recharts must be client-rendered
 import { OverviewCharts } from "./OverviewCharts";
 
-export default function OverviewPage() {
-  const m = OVERVIEW_METRICS;
+const BASE = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
+
+async function getOverview() {
+  const res = await fetch(`${BASE}/api/overview`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch overview");
+  return res.json();
+}
+
+async function getRecentReports() {
+  const res = await fetch(`${BASE}/api/audit-reports`, { cache: "no-store" });
+  if (!res.ok) return [];
+  const reports = await res.json();
+  return reports.slice(0, 3);
+}
+
+export default async function OverviewPage() {
+  const [overview, recentReports] = await Promise.all([
+    getOverview(),
+    getRecentReports(),
+  ]);
+
+  const { metrics: m, sessionVolume, topEntityTypes, recentIncidents } = overview;
 
   return (
     <PageShell title="Overview">
@@ -53,7 +64,7 @@ export default function OverviewPage() {
               View all <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
-          <OverviewCharts volumeData={SESSION_VOLUME} entityData={TOP_ENTITY_TYPES} />
+          <OverviewCharts volumeData={sessionVolume} entityData={topEntityTypes} />
         </div>
 
         {/* Recent incidents */}
@@ -65,10 +76,10 @@ export default function OverviewPage() {
             </Link>
           </div>
           <div className="flex flex-col gap-3">
-            {RECENT_INCIDENTS.map((inc) => (
+            {recentIncidents.map((inc: { id: string; summary: string; time: string; risk: string }) => (
               <div key={inc.id} className="flex flex-col gap-1 pb-3 border-b border-[#f3f4f6] last:border-0 last:pb-0">
                 <div className="flex items-center justify-between">
-                  <StatusChip status={inc.risk} />
+                  <StatusChip status={inc.risk as "low" | "medium" | "high" | "critical"} />
                   <time className="text-[11px] text-[#9ca3af] font-mono">{inc.time}</time>
                 </div>
                 <p className="text-[12px] text-[#374151] leading-snug">{inc.summary}</p>
@@ -105,11 +116,11 @@ export default function OverviewPage() {
               </tr>
             </thead>
             <tbody>
-              {AUDIT_REPORTS.slice(0, 3).map((r) => (
+              {recentReports.map((r: { id: string; name: string; useCase: string; status: string }) => (
                 <tr key={r.id} className="border-b border-[#f9fafb] last:border-0">
                   <td className="py-2.5 text-[#0d0f12] font-medium">{r.name}</td>
                   <td className="py-2.5 text-[#6b7280]">{r.useCase}</td>
-                  <td className="py-2.5"><StatusChip status={r.status} /></td>
+                  <td className="py-2.5"><StatusChip status={r.status as "ready" | "generating" | "scheduled"} /></td>
                   <td className="py-2.5 text-right">
                     {r.status === "ready" && (
                       <Link href="/audit-reports" aria-label={`Download ${r.name}`} className="text-[#6b7280] hover:text-[#0d0f12] transition-colors inline-flex">

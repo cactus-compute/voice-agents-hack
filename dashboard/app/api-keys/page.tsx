@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageShell } from "@/components/layout/PageShell";
-import { API_KEYS, type ApiKey } from "@/lib/mock-data";
+import type { ApiKey } from "@/lib/mock-data";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { Button } from "@/components/ui/Button";
 import { Plus, RotateCcw, Trash2, Copy, Check } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const PERMISSION_LABELS: Record<string, string> = {
   "read:sessions":    "Read sessions",
@@ -33,11 +34,61 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export default function ApiKeysPage() {
-  const [keys, setKeys] = useState<ApiKey[]>(API_KEYS);
+function ApiKeysSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 4 }).map((_, i) => (
+        <tr key={i} className="border-b border-[#f9fafb]">
+          {Array.from({ length: 6 }).map((__, j) => (
+            <td key={j} className="px-5 py-3.5">
+              <div className={`h-3 bg-gray-100 rounded animate-pulse ${j === 0 ? "w-36" : "w-24"}`} />
+            </td>
+          ))}
+          <td className="px-5 py-3.5" />
+        </tr>
+      ))}
+    </>
+  );
+}
 
-  function revoke(id: string) {
-    setKeys((ks) => ks.map((k) => k.id === id ? { ...k, status: "revoked" as const } : k));
+export default function ApiKeysPage() {
+  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/keys")
+      .then((r) => r.json())
+      .then(setKeys)
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function revoke(id: string) {
+    setPending(id);
+    try {
+      const res = await fetch(`/api/keys/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "revoked" }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: ApiKey = await res.json();
+      setKeys((prev) => prev.map((k) => (k.id === id ? updated : k)));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  async function rotate(id: string) {
+    setPending(id);
+    try {
+      const res = await fetch(`/api/keys/${id}/rotate`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      const updated: ApiKey = await res.json();
+      setKeys((prev) => prev.map((k) => (k.id === id ? updated : k)));
+    } finally {
+      setPending(null);
+    }
   }
 
   return (
@@ -66,55 +117,62 @@ export default function ApiKeysPage() {
             </tr>
           </thead>
           <tbody>
-            {keys.map((k) => (
-              <tr key={k.id} className="border-b border-[#f9fafb] last:border-0 hover:bg-[#fafafa] transition-colors">
-                <td className="px-5 py-3.5 font-medium text-[#0d0f12]">{k.label}</td>
-                <td className="px-5 py-3.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-[#374151]">{k.prefix}••••</span>
-                    <CopyButton text={k.prefix} />
-                  </div>
-                </td>
-                <td className="px-5 py-3.5">
-                  <div className="flex flex-wrap gap-1">
-                    {k.permissions.map((p) => (
-                      <span key={p} className="px-1.5 py-0.5 rounded bg-[#f3f4f6] text-[#6b7280] text-[10px] font-medium">
-                        {PERMISSION_LABELS[p] ?? p}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-5 py-3.5">
-                  <span className={`text-[11px] font-medium ${
-                    k.environment === "Production" ? "text-emerald-700" :
-                    k.environment === "Staging" ? "text-amber-700" : "text-[#6b7280]"
-                  }`}>
-                    {k.environment}
-                  </span>
-                </td>
-                <td className="px-5 py-3.5 text-[#6b7280]">{formatLastUsed(k.lastUsed)}</td>
-                <td className="px-5 py-3.5"><StatusChip status={k.status} /></td>
-                <td className="px-5 py-3.5">
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      title="Rotate"
-                      disabled={k.status === "revoked"}
-                      className="p-1.5 rounded border border-[#e5e7eb] text-[#6b7280] hover:border-[#0d0f12] hover:text-[#0d0f12] transition-colors disabled:opacity-30"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                    </button>
-                    <button
-                      title="Revoke"
-                      disabled={k.status === "revoked"}
-                      onClick={() => revoke(k.id)}
-                      className="p-1.5 rounded border border-[#e5e7eb] text-[#6b7280] hover:border-red-400 hover:text-red-600 transition-colors disabled:opacity-30"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {loading ? (
+              <ApiKeysSkeleton />
+            ) : (
+              keys.map((k) => (
+                <tr key={k.id} className={cn("border-b border-[#f9fafb] last:border-0 hover:bg-[#fafafa] transition-colors", k.status === "revoked" && "opacity-60")}>
+                  <td className="px-5 py-3.5 font-medium text-[#0d0f12]">{k.label}</td>
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-[#374151]">{k.prefix}••••</span>
+                      <CopyButton text={k.prefix} />
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <div className="flex flex-wrap gap-1">
+                      {k.permissions.map((p) => (
+                        <span key={p} className="px-1.5 py-0.5 rounded bg-[#f3f4f6] text-[#6b7280] text-[10px] font-medium">
+                          {PERMISSION_LABELS[p] ?? p}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <span className={`text-[11px] font-medium ${
+                      k.environment === "Production" || k.environment === "production" ? "text-emerald-700" :
+                      k.environment === "Staging" || k.environment === "staging" ? "text-amber-700" : "text-[#6b7280]"
+                    }`}>
+                      {k.environment}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3.5 text-[#6b7280]">{formatLastUsed(k.lastUsed)}</td>
+                  <td className="px-5 py-3.5"><StatusChip status={k.status} /></td>
+                  <td className="px-5 py-3.5">
+                    {k.status === "active" && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          title="Rotate"
+                          disabled={pending === k.id}
+                          onClick={() => rotate(k.id)}
+                          className="p-1.5 rounded border border-[#e5e7eb] text-[#6b7280] hover:border-[#0d0f12] hover:text-[#0d0f12] transition-colors disabled:opacity-30"
+                        >
+                          <RotateCcw className={cn("w-3 h-3", pending === k.id && "animate-spin")} />
+                        </button>
+                        <button
+                          title="Revoke"
+                          disabled={pending === k.id}
+                          onClick={() => revoke(k.id)}
+                          className="p-1.5 rounded border border-[#e5e7eb] text-[#6b7280] hover:border-red-400 hover:text-red-600 transition-colors disabled:opacity-30"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

@@ -1,8 +1,16 @@
 import { PageShell } from "@/components/layout/PageShell";
-import { AUDIT_REPORTS } from "@/lib/mock-data";
+import type { AuditReport } from "@/lib/mock-data";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { Button } from "@/components/ui/Button";
 import { Download, Plus, FileText, Clock } from "lucide-react";
+
+const BASE = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
+
+async function getReports(): Promise<AuditReport[]> {
+  const res = await fetch(`${BASE}/api/audit-reports`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch audit reports");
+  return res.json();
+}
 
 const TEMPLATES = [
   { name: "HIPAA Readiness Report", desc: "PHI detection, masking coverage, and policy adherence", icon: "🏥" },
@@ -12,7 +20,9 @@ const TEMPLATES = [
   { name: "Custom Report Builder", desc: "Define your own scope, filters, and evidence set", icon: "⚙️" },
 ];
 
-export default function AuditReportsPage() {
+export default async function AuditReportsPage() {
+  const reports = await getReports();
+
   return (
     <PageShell title="Audit Reports">
       <div className="flex items-start justify-between mb-6">
@@ -50,7 +60,7 @@ export default function AuditReportsPage() {
           <div className="text-[13px] font-semibold text-[#0d0f12]">Generated Reports</div>
           <div className="flex items-center gap-2 text-[12px] text-[#9ca3af]">
             <Clock className="w-3.5 h-3.5" aria-hidden="true" />
-            {AUDIT_REPORTS.filter((r) => r.status === "scheduled").length} scheduled
+            {reports.filter((r) => r.status === "scheduled").length} scheduled
           </div>
         </div>
         <table className="w-full text-[12px]">
@@ -66,7 +76,7 @@ export default function AuditReportsPage() {
             </tr>
           </thead>
           <tbody>
-            {AUDIT_REPORTS.map((r) => (
+            {reports.map((r) => (
               <tr key={r.id} className="border-b border-[#f9fafb] last:border-0 hover:bg-[#fafafa] transition-colors">
                 <td className="px-5 py-3.5">
                   <div className="flex items-center gap-2">
@@ -83,12 +93,13 @@ export default function AuditReportsPage() {
                   {r.status === "ready" ? (
                     <div className="flex items-center gap-1.5">
                       {r.formats.map((f) => (
-                        <button
+                        <a
                           key={f}
+                          href={`/api/audit-reports/${r.id}/download?format=${f}`}
                           className="flex items-center gap-1 px-2 py-1 rounded border border-[#e5e7eb] text-[11px] font-medium text-[#6b7280] hover:border-[#0d0f12] hover:text-[#0d0f12] transition-colors"
                         >
                           <Download className="w-3 h-3" /> {f}
-                        </button>
+                        </a>
                       ))}
                     </div>
                   ) : (

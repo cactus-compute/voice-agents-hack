@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageShell } from "@/components/layout/PageShell";
-import { POLICIES, type Policy } from "@/lib/mock-data";
+import type { Policy } from "@/lib/mock-data";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { Button } from "@/components/ui/Button";
 import { Plus, GitBranch, ChevronRight } from "lucide-react";
@@ -16,8 +16,37 @@ const ACTION_COLORS: Record<string, string> = {
   block:    "bg-red-50 text-red-700 border-red-200",
 };
 
+function PolicySkeleton() {
+  return (
+    <>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <tr key={i} className="border-b border-[#f9fafb]">
+          {Array.from({ length: 6 }).map((__, j) => (
+            <td key={j} className="px-5 py-3.5">
+              <div className={`h-3 bg-gray-100 rounded animate-pulse ${j === 0 ? "w-32" : "w-20"}`} />
+            </td>
+          ))}
+          <td className="px-5 py-3.5" />
+        </tr>
+      ))}
+    </>
+  );
+}
+
 export default function PoliciesPage() {
-  const [selected, setSelected] = useState<Policy>(POLICIES[0]);
+  const [policies, setPolicies] = useState<Policy[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Policy | null>(null);
+
+  useEffect(() => {
+    fetch("/api/policies")
+      .then((r) => r.json())
+      .then((data: Policy[]) => {
+        setPolicies(data);
+        setSelected(data[0] ?? null);
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <PageShell title="Policies">
@@ -47,80 +76,86 @@ export default function PoliciesPage() {
               </tr>
             </thead>
             <tbody>
-              {POLICIES.map((p) => (
-                <tr
-                  key={p.id}
-                  onClick={() => setSelected(p)}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSelected(p)}
-                  tabIndex={0}
-                  role="button"
-                  aria-pressed={selected.id === p.id}
-                  className={cn(
-                    "border-b border-[#f9fafb] cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0d0f12]",
-                    selected.id === p.id ? "bg-[#f9fafb]" : "hover:bg-[#fafafa]"
-                  )}
-                >
-                  <td className="px-5 py-3.5 font-medium text-[#0d0f12]">{p.name}</td>
-                  <td className="px-5 py-3.5">
-                    <span className="px-2 py-0.5 rounded border border-[#e5e7eb] text-[#374151] text-[11px] font-medium">{p.framework}</span>
-                  </td>
-                  <td className="px-5 py-3.5 text-[#6b7280]">{p.scope}</td>
-                  <td className="px-5 py-3.5 font-mono text-[#9ca3af]">v{p.version}</td>
-                  <td className="px-5 py-3.5"><StatusChip status={p.status} /></td>
-                  <td className="px-5 py-3.5 text-[#6b7280]">{p.updatedAt}</td>
-                  <td className="px-5 py-3.5 text-[#9ca3af]">
-                    <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
-                  </td>
-                </tr>
-              ))}
+              {loading ? (
+                <PolicySkeleton />
+              ) : (
+                policies.map((p) => (
+                  <tr
+                    key={p.id}
+                    onClick={() => setSelected(p)}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setSelected(p)}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={selected?.id === p.id}
+                    className={cn(
+                      "border-b border-[#f9fafb] cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0d0f12]",
+                      selected?.id === p.id ? "bg-[#f9fafb]" : "hover:bg-[#fafafa]"
+                    )}
+                  >
+                    <td className="px-5 py-3.5 font-medium text-[#0d0f12]">{p.name}</td>
+                    <td className="px-5 py-3.5">
+                      <span className="px-2 py-0.5 rounded border border-[#e5e7eb] text-[#374151] text-[11px] font-medium">{p.framework}</span>
+                    </td>
+                    <td className="px-5 py-3.5 text-[#6b7280]">{p.scope}</td>
+                    <td className="px-5 py-3.5 font-mono text-[#9ca3af]">v{p.version}</td>
+                    <td className="px-5 py-3.5"><StatusChip status={p.status} /></td>
+                    <td className="px-5 py-3.5 text-[#6b7280]">{p.updatedAt}</td>
+                    <td className="px-5 py-3.5 text-[#9ca3af]">
+                      <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
 
         {/* Detail panel */}
-        <div className="w-[360px] shrink-0 flex flex-col gap-3">
-          <div className="rounded-lg border border-[#e5e7eb] bg-white p-5 flex-1 overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <div className="text-[13px] font-semibold text-[#0d0f12]">{selected.name}</div>
-                <div className="text-[12px] text-[#9ca3af] mt-0.5 font-mono">
-                  v{selected.version} · {selected.framework} · {selected.scope}
-                </div>
-              </div>
-              <StatusChip status={selected.status} />
-            </div>
-
-            <div className="flex flex-col gap-1 mb-5">
-              {selected.rules.map((r) => (
-                <div key={r.entity} className="flex items-center justify-between py-2 border-b border-[#f9fafb] last:border-0">
-                  <span className="font-mono text-[12px] text-[#374151]">{r.entity}</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className={cn(
-                      "px-1.5 py-0.5 rounded border text-[10px] font-medium",
-                      ACTION_COLORS[r.action] ?? "bg-gray-50 text-gray-600 border-gray-200"
-                    )}>
-                      {r.action}
-                    </span>
-                    {r.rehydration && (
-                      <span className="text-[10px] text-purple-600 font-medium">reversible</span>
-                    )}
+        {selected && (
+          <div className="w-[360px] shrink-0 flex flex-col gap-3">
+            <div className="rounded-lg border border-[#e5e7eb] bg-white p-5 flex-1 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <div className="text-[13px] font-semibold text-[#0d0f12]">{selected.name}</div>
+                  <div className="text-[12px] text-[#9ca3af] mt-0.5 font-mono">
+                    v{selected.version} · {selected.framework} · {selected.scope}
                   </div>
                 </div>
-              ))}
+                <StatusChip status={selected.status} />
+              </div>
+
+              <div className="flex flex-col gap-1 mb-5">
+                {selected.rules.map((r) => (
+                  <div key={r.entity} className="flex items-center justify-between py-2 border-b border-[#f9fafb] last:border-0">
+                    <span className="font-mono text-[12px] text-[#374151]">{r.entity}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded border text-[10px] font-medium",
+                        ACTION_COLORS[r.action] ?? "bg-gray-50 text-gray-600 border-gray-200"
+                      )}>
+                        {r.action}
+                      </span>
+                      {r.rehydration && (
+                        <span className="text-[10px] text-purple-600 font-medium">reversible</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="text-[11px] text-[#9ca3af]">Last updated {selected.updatedAt}</div>
             </div>
 
-            <div className="text-[11px] text-[#9ca3af]">Last updated {selected.updatedAt}</div>
+            <div className="flex gap-2">
+              <Button size="sm" variant="secondary" className="flex-1 justify-center">
+                <GitBranch className="w-3.5 h-3.5" aria-hidden="true" /> Version History
+              </Button>
+              <Button size="sm" variant="secondary" className="flex-1 justify-center">
+                Test Harness
+              </Button>
+            </div>
           </div>
-
-          <div className="flex gap-2">
-            <Button size="sm" variant="secondary" className="flex-1 justify-center">
-              <GitBranch className="w-3.5 h-3.5" aria-hidden="true" /> Version History
-            </Button>
-            <Button size="sm" variant="secondary" className="flex-1 justify-center">
-              Test Harness
-            </Button>
-          </div>
-        </div>
+        )}
       </div>
     </PageShell>
   );

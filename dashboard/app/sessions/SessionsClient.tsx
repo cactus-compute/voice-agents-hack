@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { SESSIONS, type Session } from "@/lib/mock-data";
+import type { Session } from "@/lib/mock-data";
 import { StatusChip } from "@/components/ui/StatusChip";
 import { cn } from "@/lib/utils";
 import { X, Mic, MessageSquare, ChevronRight, SearchX } from "lucide-react";
@@ -14,8 +14,27 @@ function formatTs(ts: string) {
   return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+function TableSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <tr key={i} className="border-b border-[#f9fafb]">
+          {Array.from({ length: 9 }).map((__, j) => (
+            <td key={j} className="px-4 py-3">
+              <div className={`h-3 bg-gray-100 rounded animate-pulse ${j === 0 ? "w-28" : j === 3 ? "w-32" : "w-16"}`} />
+            </td>
+          ))}
+          <td className="px-4 py-3" />
+        </tr>
+      ))}
+    </>
+  );
+}
+
 export function SessionsClient() {
   const searchParams = useSearchParams();
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Session | null>(null);
   const [tab, setTab] = useState<Tab>("Summary");
   const [filter, setFilter] = useState(searchParams.get("q") ?? "");
@@ -26,13 +45,24 @@ export function SessionsClient() {
     if (q) setFilter(q);
   }, [searchParams]);
 
-  const filtered = SESSIONS.filter((s) =>
-    !filter ||
-    s.id.includes(filter) ||
-    s.useCase.toLowerCase().includes(filter.toLowerCase()) ||
-    s.status.includes(filter.toLowerCase()) ||
-    s.riskLevel.includes(filter.toLowerCase())
-  );
+  const fetchSessions = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filter) params.set("q", filter);
+      const res = await fetch(`/api/sessions?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to fetch sessions");
+      setSessions(await res.json());
+    } catch {
+      setSessions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [filter]);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
 
   return (
     <div className="flex gap-4 h-[calc(100vh-220px)] min-h-[500px]">
@@ -84,7 +114,9 @@ export function SessionsClient() {
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && (
+              {loading ? (
+                <TableSkeleton />
+              ) : sessions.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-2">
@@ -99,39 +131,40 @@ export function SessionsClient() {
                     </div>
                   </td>
                 </tr>
+              ) : (
+                sessions.map((s) => (
+                  <tr
+                    key={s.id}
+                    onClick={() => { setSelected(s); setTab("Summary"); }}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (setSelected(s), setTab("Summary"))}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Session ${s.id}, ${s.useCase}, ${s.riskLevel} risk`}
+                    className={cn(
+                      "border-b border-[#f9fafb] cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0d0f12]",
+                      selected?.id === s.id ? "bg-[#f9fafb]" : "hover:bg-[#fafafa]"
+                    )}
+                  >
+                    <td className="px-4 py-3 font-mono text-[#0d0f12]">{s.id}</td>
+                    <td className="px-4 py-3 text-[#6b7280]">{formatTs(s.timestamp)}</td>
+                    <td className="px-4 py-3">
+                      {s.channel === "voice"
+                        ? <span className="flex items-center gap-1 text-[#6b7280]"><Mic className="w-3 h-3" /> Voice</span>
+                        : <span className="flex items-center gap-1 text-[#6b7280]"><MessageSquare className="w-3 h-3" /> Text</span>
+                      }
+                    </td>
+                    <td className="px-4 py-3 text-[#374151]">{s.useCase}</td>
+                    <td className="px-4 py-3 font-mono text-[#9ca3af]">{s.policyVersion}</td>
+                    <td className="px-4 py-3"><StatusChip status={s.status} /></td>
+                    <td className="px-4 py-3 text-[#374151]">{s.entitiesDetected}</td>
+                    <td className="px-4 py-3"><StatusChip status={s.riskLevel} /></td>
+                    <td className="px-4 py-3 text-[#6b7280]">{s.duration}</td>
+                    <td className="px-4 py-3 text-[#9ca3af]">
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </td>
+                  </tr>
+                ))
               )}
-              {filtered.map((s) => (
-                <tr
-                  key={s.id}
-                  onClick={() => { setSelected(s); setTab("Summary"); }}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (setSelected(s), setTab("Summary"))}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`Session ${s.id}, ${s.useCase}, ${s.riskLevel} risk`}
-                  className={cn(
-                    "border-b border-[#f9fafb] cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#0d0f12]",
-                    selected?.id === s.id ? "bg-[#f9fafb]" : "hover:bg-[#fafafa]"
-                  )}
-                >
-                  <td className="px-4 py-3 font-mono text-[#0d0f12]">{s.id}</td>
-                  <td className="px-4 py-3 text-[#6b7280]">{formatTs(s.timestamp)}</td>
-                  <td className="px-4 py-3">
-                    {s.channel === "voice"
-                      ? <span className="flex items-center gap-1 text-[#6b7280]"><Mic className="w-3 h-3" /> Voice</span>
-                      : <span className="flex items-center gap-1 text-[#6b7280]"><MessageSquare className="w-3 h-3" /> Text</span>
-                    }
-                  </td>
-                  <td className="px-4 py-3 text-[#374151]">{s.useCase}</td>
-                  <td className="px-4 py-3 font-mono text-[#9ca3af]">{s.policyVersion}</td>
-                  <td className="px-4 py-3"><StatusChip status={s.status} /></td>
-                  <td className="px-4 py-3 text-[#374151]">{s.entitiesDetected}</td>
-                  <td className="px-4 py-3"><StatusChip status={s.riskLevel} /></td>
-                  <td className="px-4 py-3 text-[#6b7280]">{s.duration}</td>
-                  <td className="px-4 py-3 text-[#9ca3af]">
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </td>
-                </tr>
-              ))}
             </tbody>
           </table>
         </div>
@@ -254,11 +287,8 @@ function TimelineTab({ session: s }: { session: Session }) {
 }
 
 function TranscriptDiffTab({ session: s }: { session: Session }) {
-  // Reconstruct original transcript from redacted + entity spans sorted by position
   const sorted = [...s.entitySpans].sort((a, b) => a.start - b.start);
 
-  // Build original: replace each masked token in the redacted transcript with the real value
-  // using the masked token as the replacement key (stable, no offset drift)
   const originalParts: { text: string; highlight: boolean }[] = [];
   let remaining = s.redactedTranscript;
   for (const span of sorted) {
@@ -270,7 +300,6 @@ function TranscriptDiffTab({ session: s }: { session: Session }) {
   }
   if (remaining) originalParts.push({ text: remaining, highlight: false });
 
-  // Build redacted: split on [TOKEN] placeholders
   const redactedParts = s.redactedTranscript
     .split(/(\[[A-Z_]+\])/)
     .map((part, i) => ({ text: part, highlight: /^\[[A-Z_]+\]$/.test(part), key: `r-${i}` }));
