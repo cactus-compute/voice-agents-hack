@@ -2,12 +2,15 @@
 Hybrid retrieval over the disk index.
 
 Combines:
-  * SQLite FTS5 BM25 on chunk text + filename
+  * SQLite FTS5 BM25 on chunk text + filename (filename column weighted 5x)
   * hnswlib cosine search on chunk embeddings
 
-Results are fused with reciprocal rank fusion (RRF). The caller gets back
-ranked `Hit` objects with enough metadata to cite a source file and to
-embed a short snippet in a RAG prompt.
+Results are fused with reciprocal rank fusion (RRF), deduplicated by
+`file_id` (so one big file with many mediocre chunks cannot crowd out a
+better file with a single strong chunk), and lightly boosted when the
+file's basename contains a query term. The caller gets back ranked `Hit`
+objects with enough metadata to cite a source file and to embed a short
+snippet in a RAG prompt.
 """
 
 from __future__ import annotations
@@ -41,6 +44,15 @@ class FileHit:
 
 
 _RRF_K = 60
+# Bonus added to the RRF score when a file's basename (without extension)
+# contains one of the query terms. Picked empirically: large enough to
+# always beat a pure-body tangential match with similar RRF score, small
+# enough that it doesn't override genuinely stronger semantic hits.
+_FILENAME_MATCH_BOOST = 0.05
+# FTS5 schema is `fts5(name, text, …)` — weighting the `name` column 5x
+# makes filename hits ~5x more important than body hits in BM25 ranking.
+_BM25_NAME_WEIGHT = 5.0
+_BM25_TEXT_WEIGHT = 1.0
 
 
 class IndexHandle:
@@ -79,30 +91,11 @@ class IndexHandle:
         terms = _extract_terms(query)
         if not terms:
             return []
-        match_expr = _fts_match_expression(terms, prefix=True)
         # bm25() must be called in a query that scans content_fts directly.
         # Rank chunks first, then join to files and pick the best rank per file.
-        with self._lock:
-            rows = self._db.execute(
-                """
-                WITH matched AS (
-                    SELECT rowid AS chunk_id, bm25(content_fts) AS rank
-                    FROM content_fts
-                    WHERE content_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                )
-                SELECT files.path AS path, files.name AS name, files.mtime AS mtime,
-                       MIN(matched.rank) AS rank
-                FROM matched
-                JOIN chunks ON chunks.id = matched.chunk_id
-                JOIN files  ON files.id  = chunks.file_id
-                GROUP BY files.id
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (match_expr, limit * 4, limit),
-            ).fetchall()
+        # Column-weighted BM25 (name=5.0, text=1.0) lets exact filename
+        # matches win over incidental body matches of the same word.
+        rows = self._run_fts_files_query(terms, limit=limit)
         out: list[FileHit] = []
         for row in rows:
             out.append(
@@ -115,26 +108,94 @@ class IndexHandle:
             )
         return out
 
+    def _run_fts_files_query(
+        self, terms: list[str], *, limit: int
+    ) -> list[sqlite3.Row]:
+        """Run the file-level FTS query with an AND-first, OR-fallback strategy."""
+        def _exec(expr: str) -> list[sqlite3.Row]:
+            with self._lock:
+                return self._db.execute(
+                    f"""
+                    WITH matched AS (
+                        SELECT rowid AS chunk_id,
+                               bm25(content_fts, {_BM25_NAME_WEIGHT}, {_BM25_TEXT_WEIGHT}) AS rank
+                        FROM content_fts
+                        WHERE content_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    )
+                    SELECT files.path AS path, files.name AS name, files.mtime AS mtime,
+                           MIN(matched.rank) AS rank
+                    FROM matched
+                    JOIN chunks ON chunks.id = matched.chunk_id
+                    JOIN files  ON files.id  = chunks.file_id
+                    GROUP BY files.id
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (expr, limit * 4, limit),
+                ).fetchall()
+
+        # Precision-first: require all terms, fall back to any-term if empty.
+        if len(terms) >= 2:
+            and_expr = _fts_match_expression(terms, prefix=True, operator="AND")
+            rows = _exec(and_expr)
+            if rows:
+                return rows
+        or_expr = _fts_match_expression(terms, prefix=True, operator="OR")
+        return _exec(or_expr)
+
     def search_content(
         self,
         query: str,
         *,
         k: int = 6,
     ) -> list[Hit]:
-        """Hybrid top-k retrieval with RRF."""
-        fts_hits = self._fts_hits(query, k=k * 4)
-        vec_hits = self._vector_hits(query, k=k * 4)
-        fused = _reciprocal_rank_fusion(fts_hits, vec_hits, limit=k)
-        ids = [hit_id for hit_id, _ in fused]
+        """Hybrid top-k retrieval with RRF, deduplicated by file.
+
+        For each retrieval channel (FTS, vector) we collapse chunk-level
+        hits to one best chunk per file_id before running RRF. This
+        guarantees the top-k is filled with distinct files instead of
+        many chunks from the same mid-ranking file.
+        """
+        raw_fts = self._fts_hits(query, k=k * 8)
+        raw_vec = self._vector_hits(query, k=k * 8)
+
+        chunk_to_file = _chunk_to_file_map(self._db, raw_fts, raw_vec)
+
+        fts_file_hits, fts_chunk_for_file = _collapse_to_files(
+            raw_fts, chunk_to_file
+        )
+        vec_file_hits, vec_chunk_for_file = _collapse_to_files(
+            raw_vec, chunk_to_file
+        )
+
+        fused_files = _reciprocal_rank_fusion_files(
+            fts_file_hits, vec_file_hits, limit=k * 2
+        )
+
+        terms = set(_extract_terms(query))
+        boosted: list[tuple[int, float, str]] = []
+        file_sources = _file_source_map(fts_file_hits, vec_file_hits)
+        for file_id, score in fused_files:
+            src = file_sources.get(file_id, "hybrid")
+            chosen_chunk = fts_chunk_for_file.get(file_id) or vec_chunk_for_file.get(file_id)
+            boost_score = score + _filename_boost(file_id, terms, chunk_to_file)
+            if chosen_chunk is not None:
+                boosted.append((chosen_chunk, boost_score, src))
+
+        boosted.sort(key=lambda row: row[1], reverse=True)
+        top = boosted[:k]
+        ids = [chunk_id for chunk_id, _, _ in top]
         details = store.lookup_chunks_by_id(self._db, ids)
+
         hits: list[Hit] = []
-        for chunk_id, score in fused:
+        for chunk_id, score, source in top:
             if chunk_id not in details:
                 continue
             path, text, mtime = details[chunk_id]
             name = Path(path).name
             snippet = _trim_snippet(text, query)
-            source = _source_for(chunk_id, fts_hits, vec_hits)
             hits.append(
                 Hit(
                     path=path,
@@ -151,19 +212,31 @@ class IndexHandle:
         terms = _extract_terms(query)
         if not terms:
             return []
-        match_expr = _fts_match_expression(terms, prefix=True)
-        with self._lock:
-            rows = self._db.execute(
-                """
-                SELECT rowid AS id, bm25(content_fts) AS rank
-                FROM content_fts
-                WHERE content_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (match_expr, k),
-            ).fetchall()
-        return [(int(r["id"]), float(r["rank"] or 0.0)) for r in rows]
+
+        def _exec(expr: str) -> list[tuple[int, float]]:
+            with self._lock:
+                rows = self._db.execute(
+                    f"""
+                    SELECT rowid AS id,
+                           bm25(content_fts, {_BM25_NAME_WEIGHT}, {_BM25_TEXT_WEIGHT}) AS rank
+                    FROM content_fts
+                    WHERE content_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (expr, k),
+                ).fetchall()
+            return [(int(r["id"]), float(r["rank"] or 0.0)) for r in rows]
+
+        # AND-first: prefer files matching every non-stopword term. If that
+        # yields nothing, fall back to OR so recall is preserved.
+        if len(terms) >= 2:
+            and_hits = _exec(
+                _fts_match_expression(terms, prefix=True, operator="AND")
+            )
+            if and_hits:
+                return and_hits
+        return _exec(_fts_match_expression(terms, prefix=True, operator="OR"))
 
     def _vector_hits(self, query: str, *, k: int) -> list[tuple[int, float]]:
         if self._vec_index is None:
@@ -246,9 +319,15 @@ def _extract_terms(query: str) -> list[str]:
     return [tok for tok in tokens if tok not in _STOPWORDS and len(tok) >= 2]
 
 
-def _fts_match_expression(terms: list[str], *, prefix: bool) -> str:
+def _fts_match_expression(
+    terms: list[str],
+    *,
+    prefix: bool,
+    operator: str = "OR",
+) -> str:
     if not terms:
         return ""
+    op = operator.upper() if operator.upper() in ("AND", "OR") else "OR"
     # Escape double quotes for FTS5 string literals, then wrap each term.
     parts: list[str] = []
     for term in terms:
@@ -257,38 +336,122 @@ def _fts_match_expression(terms: list[str], *, prefix: bool) -> str:
         if prefix:
             quoted += "*"
         parts.append(quoted)
-    return " OR ".join(parts)
+    return f" {op} ".join(parts)
 
 
-def _reciprocal_rank_fusion(
+# ─── File-level fusion helpers ────────────────────────────────────────────────
+
+
+def _chunk_to_file_map(
+    conn: sqlite3.Connection,
+    fts: list[tuple[int, float]],
+    vec: list[tuple[int, float]],
+) -> dict[int, tuple[int, str, str]]:
+    """Return `{chunk_id: (file_id, path, name)}` for every chunk that
+    appears in either retrieval channel."""
+    ids: set[int] = set()
+    for cid, _ in fts:
+        ids.add(cid)
+    for cid, _ in vec:
+        ids.add(cid)
+    if not ids:
+        return {}
+    qmarks = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT chunks.id AS cid, files.id AS fid,
+               files.path AS path, files.name AS name
+        FROM chunks JOIN files ON files.id = chunks.file_id
+        WHERE chunks.id IN ({qmarks})
+        """,
+        list(ids),
+    ).fetchall()
+    return {int(r["cid"]): (int(r["fid"]), str(r["path"]), str(r["name"])) for r in rows}
+
+
+def _collapse_to_files(
+    hits: list[tuple[int, float]],
+    chunk_to_file: dict[int, tuple[int, str, str]],
+) -> tuple[list[tuple[int, float]], dict[int, int]]:
+    """Reduce chunk-level hits to file-level hits.
+
+    Returns ``(file_hits, best_chunk_per_file)`` where ``file_hits`` is the
+    deduplicated ordered list and ``best_chunk_per_file`` maps each file_id
+    to the chunk id that produced its best rank (used to pull the snippet
+    back out for the final Hit).
+    """
+    file_hits: list[tuple[int, float]] = []
+    seen_files: set[int] = set()
+    best_chunk: dict[int, int] = {}
+    for chunk_id, score in hits:
+        entry = chunk_to_file.get(chunk_id)
+        if entry is None:
+            continue
+        file_id = entry[0]
+        if file_id in seen_files:
+            continue
+        seen_files.add(file_id)
+        best_chunk[file_id] = chunk_id
+        file_hits.append((file_id, score))
+    return file_hits, best_chunk
+
+
+def _reciprocal_rank_fusion_files(
     fts: list[tuple[int, float]],
     vec: list[tuple[int, float]],
     *,
     limit: int,
 ) -> list[tuple[int, float]]:
+    """RRF over file-level hits. Returns `[(file_id, rrf_score), …]`."""
     scores: dict[int, float] = {}
-    for rank, (chunk_id, _) in enumerate(fts):
-        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
-    for rank, (chunk_id, _) in enumerate(vec):
-        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+    for rank, (file_id, _) in enumerate(fts):
+        scores[file_id] = scores.get(file_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
+    for rank, (file_id, _) in enumerate(vec):
+        scores[file_id] = scores.get(file_id, 0.0) + 1.0 / (_RRF_K + rank + 1)
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     return ranked[:limit]
 
 
-def _source_for(
-    chunk_id: int,
-    fts: list[tuple[int, float]],
-    vec: list[tuple[int, float]],
-) -> str:
-    in_fts = any(cid == chunk_id for cid, _ in fts)
-    in_vec = any(cid == chunk_id for cid, _ in vec)
-    if in_fts and in_vec:
-        return "hybrid"
-    if in_fts:
-        return "fts"
-    if in_vec:
-        return "vector"
-    return "hybrid"
+def _file_source_map(
+    fts_files: list[tuple[int, float]],
+    vec_files: list[tuple[int, float]],
+) -> dict[int, str]:
+    in_fts = {fid for fid, _ in fts_files}
+    in_vec = {fid for fid, _ in vec_files}
+    out: dict[int, str] = {}
+    for fid in in_fts | in_vec:
+        if fid in in_fts and fid in in_vec:
+            out[fid] = "hybrid"
+        elif fid in in_fts:
+            out[fid] = "fts"
+        else:
+            out[fid] = "vector"
+    return out
+
+
+def _filename_boost(
+    file_id: int,
+    terms: set[str],
+    chunk_to_file: dict[int, tuple[int, str, str]],
+) -> float:
+    """Small positive score when the basename contains a query term."""
+    if not terms:
+        return 0.0
+    name = ""
+    for entry in chunk_to_file.values():
+        if entry[0] == file_id:
+            name = entry[2]
+            break
+    if not name:
+        return 0.0
+    stem = Path(name).stem.lower()
+    name_tokens = {tok for tok in re.split(r"[^A-Za-z0-9]+", stem) if tok}
+    if terms & name_tokens:
+        return _FILENAME_MATCH_BOOST
+    return 0.0
+
+
+# ─── Snippet formatting ───────────────────────────────────────────────────────
 
 
 def _trim_snippet(text: str, query: str, *, width: int = 320) -> str:

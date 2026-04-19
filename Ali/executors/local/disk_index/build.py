@@ -162,6 +162,7 @@ def run_build(
                 # remain findable via FTS without embedding source bodies.
                 if extract.is_code_file(cand.path):
                     chunks = [extract.filename_index_text(cand.path)]
+                    content_ok = False  # filename-only, no real content
                 else:
                     content = extract.extract_text(cand.path)
                     chunks = (
@@ -169,6 +170,14 @@ def run_build(
                         if content
                         else []
                     )
+                    content_ok = bool(chunks)
+                    # If extraction produced nothing (scanned PDF, exotic
+                    # format, unreadable docx), fall back to a filename-only
+                    # chunk so the file stays reachable via FTS by name.
+                    # Without this a resume.pdf that pypdf can't parse is
+                    # invisible to every search.
+                    if not chunks:
+                        chunks = [extract.filename_index_text(cand.path)]
                 file_id = store.upsert_file(
                     conn,
                     path=path_str,
@@ -177,7 +186,7 @@ def run_build(
                     size=cand.size,
                     mtime=cand.mtime,
                     mime=extract.guess_mime(cand.path),
-                    content_ok=bool(chunks),
+                    content_ok=content_ok,
                 )
                 store.clear_chunks(conn, file_id)
                 if chunks:

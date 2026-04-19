@@ -90,6 +90,40 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "ON chunks(id) WHERE vector IS NULL"
     )
 
+    # One-shot: previously we never inserted a filename-only chunk for non-
+    # code files whose body extraction failed (scanned PDFs, exotic formats).
+    # Those rows exist in `files` with zero chunks and are invisible to every
+    # FTS path. Reset their mtime so the next incremental build re-extracts
+    # them; build.py now inserts a filename-only chunk as a fallback.
+    already_ran = conn.execute(
+        "SELECT value FROM manifest WHERE key = ?",
+        ("empty_file_mtime_reset_v1",),
+    ).fetchone()
+    if already_ran is None:
+        reset_mtime_for_empty_files(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO manifest(key, value) VALUES (?, ?)",
+            ("empty_file_mtime_reset_v1", "1"),
+        )
+
+
+def reset_mtime_for_empty_files(conn: sqlite3.Connection) -> int:
+    """Reset the stored mtime of any real file row that has no chunks, so a
+    subsequent incremental build treats it as "modified" and re-extracts.
+
+    Returns the number of rows touched. Skips synthetic `ali://…` rows — we
+    don't manage their mtime this way.
+    """
+    cur = conn.execute(
+        """
+        UPDATE files
+        SET mtime = 0
+        WHERE path NOT LIKE 'ali://%'
+          AND id NOT IN (SELECT DISTINCT file_id FROM chunks)
+        """
+    )
+    return int(cur.rowcount or 0)
+
 
 def set_manifest(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
