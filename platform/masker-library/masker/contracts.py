@@ -5,6 +5,8 @@ three workstreams can build against stable interfaces in parallel.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -120,6 +122,96 @@ class TraceEvent:
             "message": self.message,
             "elapsed_ms": self.elapsed_ms,
             "payload": dict(self.payload),
+        }
+
+
+GENESIS_HASH = "GENESIS"
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """One hash-chained row in the compliance evidence trail. Append-only.
+
+    Each row's `entry_hash` is a SHA-256 over the canonical JSON of every
+    other field (including `prev_hash`). The next row's `prev_hash` MUST
+    equal this row's `entry_hash`, forming a tamper-evident chain a la git
+    commits or AWS CloudTrail.
+
+    INVARIANT — the `payload` field MUST NOT contain raw PHI. Store entity
+    types, span indices, and lengths only. Raw values stay in the in-memory
+    `MaskedText.token_map` and are never written to disk.
+    """
+
+    ts: str                       # ISO-8601 UTC, microsecond precision
+    surface: str                  # "veil" | "aurora" | "aurora-laptop" | "cli"
+    stage: TraceStage
+    message: str                  # human-readable XAI explanation
+    elapsed_ms: float
+    decision: Route | None
+    policy: PolicyName | None
+    regulation: str               # "hipaa" at MVP; "pci" / "glba" later
+    controls: list[str]           # ["164.312(a)(1)", "164.312(b)", ...]
+    payload: dict[str, Any]       # span types/indices/lengths only — NEVER raw PHI
+    prev_hash: str                # hex digest of previous row, or GENESIS_HASH
+    entry_hash: str               # hex digest of this row's canonical body
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ts": self.ts,
+            "surface": self.surface,
+            "stage": self.stage,
+            "message": self.message,
+            "elapsed_ms": self.elapsed_ms,
+            "decision": self.decision,
+            "policy": self.policy,
+            "regulation": self.regulation,
+            "controls": list(self.controls),
+            "payload": dict(self.payload),
+            "prev_hash": self.prev_hash,
+            "entry_hash": self.entry_hash,
+        }
+
+    def to_jsonl(self) -> str:
+        """One-line JSON suitable for appending to `audit.jsonl`."""
+        return json.dumps(self.to_dict(), separators=(",", ":"), sort_keys=True)
+
+
+def canonical_json(payload: dict[str, Any]) -> str:
+    """Deterministic serialization used for hashing.
+
+    Stdlib only. Sorted keys, no whitespace, UTF-8. Sufficient for the demo;
+    full RFC 8785 (JCS) canonicalization is post-MVP.
+    """
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+
+
+def compute_entry_hash(body_without_hash: dict[str, Any]) -> str:
+    """SHA-256 hex digest of an AuditEntry's canonical JSON sans `entry_hash`."""
+    serialized = canonical_json(body_without_hash).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+@dataclass(frozen=True)
+class ChainVerification:
+    """Result of `Tracer.verify_chain(path)`. Used by the `python -m masker
+    verify` CLI to power the demo's tamper-test moment.
+    """
+
+    valid: bool
+    total_entries: int
+    broken_at_line: int | None = None      # 1-indexed line number of first failure
+    expected_hash: str | None = None       # what the row claims its entry_hash is
+    computed_hash: str | None = None       # what we recompute it to be
+    reason: str = ""                       # human-readable failure reason
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "total_entries": self.total_entries,
+            "broken_at_line": self.broken_at_line,
+            "expected_hash": self.expected_hash,
+            "computed_hash": self.computed_hash,
+            "reason": self.reason,
         }
 
 
