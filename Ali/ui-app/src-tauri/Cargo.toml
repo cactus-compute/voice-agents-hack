@@ -1,0 +1,18 @@
+[package]
+name = "ali_ui_app"
+version = "0.1.0"
+description = "Ali desktop UI shell"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+default = []

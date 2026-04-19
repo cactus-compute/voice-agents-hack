@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git remote *)",
+      "Read(//Applications/**)",
+      "Read(//Users/alspenceramitojr/Applications/**)",
+      "Bash(pip3 list *)",
+      "Bash(python3 -c \"import cv2; print\\('opencv ok'\\)\")",
+      "Bash(python3 -c \"import pyttsx3; print\\('pyttsx3 ok'\\)\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import cv2, pyttsx3; print\\('deps ok'\\)\")",
+      "Bash(say -v '?')",
+      "Bash(pip show *)",
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(python3 *)"
+    ]
+  }
+}

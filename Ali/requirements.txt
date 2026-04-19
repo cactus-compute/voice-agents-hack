@@ -1,0 +1,75 @@
+# ---- Alspencer_setup__If you encounter and error installing the requirements --- 
+# run `brew install portaudio` to install the portaudio library
+# then install the requirements again 
+
+
+# Environment / secrets loading
+python-dotenv>=1.0.0
+
+# Voice capture
+pyaudio>=0.2.14
+pynput>=1.7.6
+# Wake word ("Ali") — Google Web Speech API via speech_recognition
+SpeechRecognition>=3.10.0
+# PEP 561 stubs so basedpyright/Pylance resolve native packages without "from source" noise
+types-pyaudio>=0.2.16
+types-pynput>=1.7.6
+
+# Speech-to-text fallback (used when Cactus STT is unavailable)
+faster-whisper>=1.0.0
+
+# Intent parsing — Gemini API (fast text inference; audio STT stays on-device)
+google-genai>=1.0.0
+
+# Browser sub-agent: Python talks to a vendored Chrome extension over MCP stdio.
+# fastapi/uvicorn power the local Cactus sidecar (scripts/cactus_server.py).
+# mcp is the Python client library for the MCP protocol used to reach the
+# vendored Node server in executors/browser/agent/server.
+fastapi>=0.115.0
+uvicorn>=0.30.0
+mcp>=1.0.0
+
+# macOS menu bar
+rumps>=0.4.0
+
+# Modern desktop UI (replaces tkinter overlay)
+PySide6>=6.8.0
+websockets>=12.0
+
+# Computer vision
+opencv-python>=4.9.0
+
+# ── Laptop-wide disk index (RAG over the user's files) ───────────────────────
+# sentence-transformers pulls the MiniLM weights (~90MB) on first run.
+# pypdf + python-docx cover the most common non-plaintext documents; rtf,
+# pages, key, numbers are handled by the macOS built-in `textutil` binary.
+#
+# IMPORTANT: pin sentence-transformers to <5.0. Starting in 5.x the package
+# imports torchcodec at module load time for multimodal support, which
+# requires FFmpeg system libraries (libavutil.*) that aren't shipped with
+# macOS. The 4.x series still covers MiniLM-L6-v2 and has no such
+# dependency. See: https://github.com/UKPLab/sentence-transformers/issues/…
+sentence-transformers>=3.0.0,<5.0.0
+hnswlib>=0.8.0
+pypdf>=4.0.0
+python-docx>=1.1.0
+tqdm>=4.66.0
+
+# ── Cactus SDK ────────────────────────────────────────────────────────────────
+# Cactus is NOT a pip package. Install it separately:
+#
+#   macOS (Homebrew):
+#     brew install cactus-compute/cactus/cactus
+#
+#   From source:
+#     git clone https://github.com/cactus-compute/cactus && cd cactus
+#     source ./setup
+#
+# After installing, the 'cactus' CLI will be available.
+# Gemma 4 model weights download automatically on first run:
+#     cactus run google/gemma-4-E2B-it
+# Pre-quantized weights are also on HuggingFace: huggingface.co/Cactus-Compute
+#
+# The Python bindings (cactus_init / cactus_complete / cactus_destroy) are
+# available after the source install via the generated Python package.
+# ─────────────────────────────────────────────────────────────────────────────

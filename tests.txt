@@ -1,0 +1,3 @@
+python scripts/debug_local_flow.py --transcript "find my resume" --execute --auto-approve
+
+source ~/Documents/cactus/venv/bin/activate
