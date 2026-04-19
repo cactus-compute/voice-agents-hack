@@ -4,18 +4,41 @@ Ties all five layers together in a single push-to-talk loop.
 
 Thread model
 ────────────
-  Main thread : tkinter event loop  (macOS AppKit requires UI on main thread)
+  Main thread : Qt event loop       (macOS AppKit requires UI on main thread)
   Background  : asyncio event loop  (voice capture, STT, intent, orchestrator)
 
 The TranscriptionOverlay bridges the two via queue.Queue.
 """
 
+from __future__ import annotations
+
 import asyncio
+import os
+import sys
 import threading
-import tkinter as tk
+from typing import Callable, Protocol
 
 from config.preflight import run_preflight_checks
-from ui.overlay import TranscriptionOverlay
+
+
+class TranscriptionOverlay(Protocol):
+    def push(self, state: str, text: str = "") -> None: ...
+
+
+def _build_overlay() -> tuple["TranscriptionOverlay", Callable[[], None]]:
+    backend = os.getenv("ALI_UI_BACKEND", "qt").strip().lower()
+    if backend == "qt":
+        from PySide6.QtWidgets import QApplication  # pyright: ignore[reportMissingImports]
+        from ui.overlay import TranscriptionOverlay
+
+        app = QApplication(sys.argv)
+        overlay = TranscriptionOverlay(app)
+        return overlay, app.exec
+
+    from ui.web_overlay import TranscriptionOverlay
+
+    overlay = TranscriptionOverlay()
+    return overlay, overlay.run_forever
 
 
 # ── Asyncio agent loop (runs in background thread) ────────────────────────────
@@ -79,7 +102,7 @@ async def _agent_main(overlay: TranscriptionOverlay) -> None:
             menu_bar.set_status("ready")
 
 
-def _run_agent(overlay: TranscriptionOverlay) -> None:
+def _run_agent(overlay: "TranscriptionOverlay") -> None:
     """Entry point for the background asyncio thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -89,21 +112,43 @@ def _run_agent(overlay: TranscriptionOverlay) -> None:
         loop.close()
 
 
-# ── Main (tkinter on main thread) ─────────────────────────────────────────────
+def _start_wake_listener(overlay: "TranscriptionOverlay") -> None:
+    """Listen for 'Ali' (voice) or backtick (keyboard fallback) to trigger wake."""
+    from pynput import keyboard  # pyright: ignore[reportMissingModuleSource]
+
+    def on_press(key):
+        try:
+            if key.char == "`":
+                overlay.push("wake")  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+    listener = keyboard.Listener(on_press=on_press)
+    listener.daemon = True
+    listener.start()
+    print("[demo] Say 'Ali' or press ` (backtick) to trigger wake scene")
+
+    try:
+        from voice.wake_word import start_wake_word_listener
+        start_wake_word_listener(lambda: overlay.push("wake"))  # type: ignore[attr-defined]
+    except Exception as e:
+        print(f"[demo] Wake word listener failed to start: {e}")
+
+
+# ── Main (Qt on main thread) ──────────────────────────────────────────────────
 
 def main() -> None:
     run_preflight_checks()
 
-    root = tk.Tk()
-    root.withdraw()   # no bare root window — we only want the overlay
-
-    overlay = TranscriptionOverlay(root)
+    overlay, run_ui = _build_overlay()
 
     agent_thread = threading.Thread(target=_run_agent, args=(overlay,), daemon=True)
     agent_thread.start()
 
-    # Block here on the main thread running tkinter's event loop
-    root.mainloop()
+    _start_wake_listener(overlay)
+
+    # Block here on the main thread running the selected UI loop
+    run_ui()
 
 
 if __name__ == "__main__":

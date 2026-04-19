@@ -1,207 +1,212 @@
 """
-Floating glass overlay for the Ali voice agent.
+Liquid glass overlay — Apple-style frosted pill, top-center, expands downward.
 """
 
 from __future__ import annotations
 
+import datetime
 import queue
-import tkinter as tk
-from tkinter import font as tkfont
+import threading
+
+import cv2  # type: ignore[reportMissingImports]
+
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, QObject  # pyright: ignore[reportMissingImports]
+from PySide6.QtGui import (  # pyright: ignore[reportMissingImports]
+    QBrush, QColor, QFont, QGuiApplication, QImage, QLinearGradient,
+    QPainter, QPainterPath, QPen, QPixmap,
+)
+from PySide6.QtWidgets import QApplication, QWidget  # pyright: ignore[reportMissingImports]
+
+_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
+W_WAKE  = 560
+H_WAKE  = 200
+CAM_W   = 160
+CAM_H   = 160
+USER_NAME = "Alspencer"
 
 
-def _apply_macos_overlay(win: tk.Toplevel) -> None:
-    """
-    Patch the NSWindow so Ali floats above fullscreen apps on every Space,
-    with real transparency (not just tkinter's black-key trick).
+def _time_greeting() -> str:
+    h = datetime.datetime.now().hour
+    if h < 12:   return "Good morning"
+    if h < 17:   return "Good afternoon"
+    return "Good evening"
 
-    Window level 25 = NSStatusBarWindowLevel — above Mission Control and
-    fullscreen apps. Collection behaviour flags:
-      1   = NSWindowCollectionBehaviorCanJoinAllSpaces
-      16  = NSWindowCollectionBehaviorStationary
-      256 = NSWindowCollectionBehaviorFullScreenAuxiliary
-    """
+
+class _CamBridge(QObject):
+    frame_ready = Signal(QImage)
+    greeted     = Signal()
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+FG          = QColor(246, 246, 250)       # primary text on liquid glass
+DIM         = QColor(196, 194, 202)       # secondary text
+RED         = QColor("#E8342E")
+YELLOW      = QColor("#F3C84B")
+BLUE        = QColor("#64D2FF")
+GREEN       = QColor("#3CD07A")
+ERR         = QColor("#FF6B6B")
+
+# ── Geometry ──────────────────────────────────────────────────────────────────
+W_PILL  = 340
+W_FULL  = 560
+H_PILL  = 58
+R       = 29      # large radius → pill shape
+MARGIN  = 8       # gap from top (below menu bar)
+MAX_H   = 540
+MAX_HIST = 6
+
+# ── Timing ────────────────────────────────────────────────────────────────────
+PULSE_MS    = 500
+POLL_MS     = 40
+AUTOHIDE_MS = 5_000
+
+
+def _apply_macos_overlay(win: QWidget) -> None:
+    win._vibrancy_active = False  # type: ignore[attr-defined]
     try:
-        from AppKit import NSApplication, NSColor  # pyobjc-framework-Cocoa
+        from AppKit import NSApplication, NSColor, NSVisualEffectView  # type: ignore[reportMissingImports]
 
-        _MARKER = "__ali_overlay_find__"
-        win.title(_MARKER)
-        win.update_idletasks()
+        marker = "__ali_overlay__"
+        win.setWindowTitle(marker)
+        QApplication.processEvents()
 
         ns_app = NSApplication.sharedApplication()
         ns_win = None
-        for w in ns_app.windows():
+        for candidate in ns_app.windows():
             try:
-                if w.title() == _MARKER:
-                    ns_win = w
+                if candidate.title() == marker:
+                    ns_win = candidate
                     break
             except Exception:
                 continue
 
         if ns_win is not None:
-            ns_win.setLevel_(25)                          # above fullscreen
-            ns_win.setCollectionBehavior_(1 | 16 | 256)   # all spaces + aux
+            ns_win.setLevel_(25)
+            # 1=CanJoinAllSpaces 16=IgnoresCycle 256=FullScreenAuxiliary
+            ns_win.setCollectionBehavior_(1 | 16 | 256)
             ns_win.setOpaque_(False)
             ns_win.setBackgroundColor_(NSColor.clearColor())
 
-            # Add NSVisualEffectView for frosted-glass blur behind canvas
-            try:
-                from AppKit import (
-                    NSVisualEffectView,
-                    NSVisualEffectBlendingModeBehindWindow,
-                    NSVisualEffectStateActive,
-                )
-                cv = ns_win.contentView()
-                vev = NSVisualEffectView.alloc().initWithFrame_(cv.bounds())
-                vev.setMaterial_(4)          # NSVisualEffectMaterialDark
-                vev.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-                vev.setState_(NSVisualEffectStateActive)
-                vev.setAutoresizingMask_(2 | 16)
-                cv.addSubview_positioned_relativeTo_(vev, 0, None)
-            except Exception:
-                pass  # blur is cosmetic — skip if unavailable
+            content = ns_win.contentView()
+            effect = NSVisualEffectView.alloc().initWithFrame_(content.bounds())
+            effect.setMaterial_(21)      # UnderWindowBackground — most transparent
+            effect.setBlendingMode_(0)   # BehindWindow
+            effect.setState_(1)          # Active
+            effect.setAutoresizingMask_(18)
+            # No forced appearance — inherit system so blur stays subtle
+            content.addSubview_positioned_relativeTo_(effect, 0, None)
+            win._ns_window = ns_win  # type: ignore[attr-defined]
+            win._ns_effect = effect  # type: ignore[attr-defined]
+            win._vibrancy_active = True  # type: ignore[attr-defined]
+            print("[overlay] liquid glass vibrancy active")
 
-        win.title("")
+        win.setWindowTitle("")
     except Exception as e:
-        print(f"[overlay] native boost skipped: {e}")
-
-# ── Palette ───────────────────────────────────────────────────────────────────
-BG_TRANSPARENT = "black"
-GLASS_FILL     = "#1A1A1C"        # dark tint — blur bleeds through
-GLASS_BORDER   = "#38383A"        # slightly brighter rim for definition
-GLASS_INNER    = "#222224"
-HEADER_FG      = "#636366"        # tertiary label
-TEXT_FG        = "#F2F2F7"
-ACCENT_RED     = "#FF453A"
-ACCENT_YELLOW  = "#FFD60A"
-ACCENT_BLUE    = "#64D2FF"
-ACCENT_GREEN   = "#30D158"
-
-CLOSE_BG       = "#2C2C2E"        # close button resting fill
-CLOSE_BG_HOT   = "#48484A"        # close button hover fill
-CLOSE_FG       = "#8E8E93"        # × glyph colour
-
-# ── Layout ────────────────────────────────────────────────────────────────────
-W              = 440
-MAX_HISTORY    = 6
-RADIUS         = 18
-PX             = 20               # horizontal padding
-PT             = 14               # top padding
-PB             = 16               # bottom padding
-
-CLOSE_R        = 9                # close button circle radius
-CLOSE_CX       = PX + CLOSE_R    # centre x of close button
-CLOSE_CY       = PT + CLOSE_R    # centre y of close button
-
-# ── Animation ─────────────────────────────────────────────────────────────────
-PULSE_MS       = 480
-POLL_MS        = 40
-AUTO_HIDE_MS   = 4_000
+        print(f"[overlay] vibrancy skipped: {e}")
 
 
-def _rrect(canvas: tk.Canvas, x1, y1, x2, y2, r, **kw):
-    pts = [
-        x1+r, y1,   x2-r, y1,
-        x2,   y1,   x2,   y1+r,
-        x2,   y2-r, x2,   y2,
-        x2-r, y2,   x1+r, y2,
-        x1,   y2,   x1,   y2-r,
-        x1,   y1+r, x1,   y1,
-    ]
-    return canvas.create_polygon(pts, smooth=True, **kw)
+def _update_vibrancy_mask(win: QWidget) -> None:
+    try:
+        from Quartz import CGRectMake, CGPathCreateWithRoundedRect  # type: ignore[reportMissingImports]
+        from Quartz.QuartzCore import CAShapeLayer  # type: ignore[reportMissingImports]
+        effect = getattr(win, "_ns_effect", None)
+        if effect is None:
+            return
+        w, h = win.width(), win.height()
+        bounds = CGRectMake(0, 0, w, h)
+        effect.setFrame_(bounds)
+        mask = CAShapeLayer.layer()
+        path = CGPathCreateWithRoundedRect(bounds, R, R, None)
+        mask.setPath_(path)
+        effect.setWantsLayer_(True)
+        effect.layer().setMask_(mask)
+    except Exception:
+        pass
 
 
-class TranscriptionOverlay:
-    def __init__(self, root: tk.Tk) -> None:
-        self._root   = root
+class TranscriptionOverlay(QWidget):
+    def __init__(self, app: QApplication) -> None:
+        super().__init__()
+        self._app = app
         self._q: queue.Queue[tuple[str, str]] = queue.Queue()
-        self._history: list[tuple[str, str]] = []
+        self._history: list[tuple[str, QColor, str]] = []
+        self._drag_offset: QPoint | None = None
+        self._pulse_on = True
+        self._recording = False
+        # wake / call state
+        self._wake_mode   = False
+        self._wake_greeted = False
+        self._wake_text   = ""
+        self._cam_pixmap  = QPixmap()
+        self._cam_bridge  = _CamBridge()
+        self._cam_running = False
+        self._cam_bridge.frame_ready.connect(self._on_cam_frame)
+        self._cam_bridge.greeted.connect(self._on_wake_greeted)
 
-        self._drag_x = 0
-        self._drag_y = 0
+        self._font_label = QFont(".AppleSystemUIFont", 15, QFont.Weight.Bold)
+        self._font_body  = QFont(".AppleSystemUIFont", 14)
+        self._font_small = QFont(".AppleSystemUIFont", 12)
+        self._font_close = QFont(".AppleSystemUIFont", 16, QFont.Weight.Medium)
 
-        self._pulse_id:     str | None = None
-        self._auto_hide_id: str | None = None
-        self._pulse_state   = True
-        self._close_hot     = False
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setMouseTracking(True)
+        self.resize(W_PILL, H_PILL)
+        self._reposition(W_PILL, H_PILL)
+        self.hide()
+        _apply_macos_overlay(self)
+        _update_vibrancy_mask(self)
 
-        self._build()
-        self._poll()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll)
+        self._poll_timer.start(POLL_MS)
 
-    # ── Public ────────────────────────────────────────────────────────────────
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.timeout.connect(self._pulse_tick)
+
+        self._autohide_timer = QTimer(self)
+        self._autohide_timer.setSingleShot(True)
+        self._autohide_timer.timeout.connect(self.hide)
+
+    # ── Public ───────────────────────────────────────────────────────────────
 
     def push(self, state: str, text: str = "") -> None:
         self._q.put((state, text))
 
-    # ── Window construction ───────────────────────────────────────────────────
+    # ── Input ────────────────────────────────────────────────────────────────
 
-    def _build(self) -> None:
-        win = tk.Toplevel(self._root)
-        win.withdraw()
-        win.overrideredirect(True)
-        win.wm_attributes("-topmost", True)
-        win.wm_attributes("-alpha", 0.88)
-        try:
-            win.wm_attributes("-transparent", True)
-        except tk.TclError:
-            pass
-        win.configure(bg=BG_TRANSPARENT)
+    def mousePressEvent(self, e) -> None:  # type: ignore[override]
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._hit_close(e.position().x(), e.position().y()):
+                self._do_hide()
+            else:
+                self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        win.geometry(f"1x1+{(sw - W) // 2}+{sh - 210}")
+    def mouseMoveEvent(self, e) -> None:  # type: ignore[override]
+        if self._drag_offset and (e.buttons() & Qt.MouseButton.LeftButton):
+            self.move(e.globalPosition().toPoint() - self._drag_offset)
 
-        self._canvas = tk.Canvas(
-            win, bg=BG_TRANSPARENT, highlightthickness=0, bd=0,
-        )
-        self._canvas.pack(fill="both", expand=True)
+    def mouseReleaseEvent(self, e) -> None:  # type: ignore[override]
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = None
 
-        families = tkfont.families()
-        body_fam  = "SF Pro Display" if "SF Pro Display"  in families else "Helvetica Neue"
-        ui_fam    = "SF Pro Text"    if "SF Pro Text"     in families else "Helvetica Neue"
+    def resizeEvent(self, e) -> None:  # type: ignore[override]
+        super().resizeEvent(e)
+        _update_vibrancy_mask(self)
 
-        self._f_label  = tk.font.Font(family=ui_fam,   size=11)
-        self._f_body   = tk.font.Font(family=body_fam,  size=15, weight="bold")
-        self._f_small  = tk.font.Font(family=ui_fam,    size=13)
-        self._f_close  = tk.font.Font(family=ui_fam,    size=11, weight="bold")
+    def _hit_close(self, x: float, y: float) -> bool:
+        cx, cy = self.width() - 24, 24
+        return (x - cx) ** 2 + (y - cy) ** 2 <= 14 ** 2
 
-        win.bind("<Button-1>",         self._on_click)
-        win.bind("<B1-Motion>",        self._drag_move)
-        self._canvas.bind("<Motion>",  self._on_motion)
-        self._canvas.bind("<Leave>",   self._on_leave)
-
-        self._win = win
-        _apply_macos_overlay(win)
-
-    # ── Input handling ────────────────────────────────────────────────────────
-
-    def _on_click(self, e: tk.Event) -> None:
-        if self._hit_close(e.x, e.y):
-            self._hide()
-        else:
-            self._drag_x = e.x_root - self._win.winfo_x()
-            self._drag_y = e.y_root - self._win.winfo_y()
-
-    def _drag_move(self, e: tk.Event) -> None:
-        if not self._hit_close(e.x, e.y):
-            nx = e.x_root - self._drag_x
-            ny = e.y_root - self._drag_y
-            self._win.geometry(f"+{nx}+{ny}")
-
-    def _on_motion(self, e: tk.Event) -> None:
-        hot = self._hit_close(e.x, e.y)
-        if hot != self._close_hot:
-            self._close_hot = hot
-            self._redraw_close(hot)
-
-    def _on_leave(self, e: tk.Event) -> None:
-        if self._close_hot:
-            self._close_hot = False
-            self._redraw_close(False)
-
-    def _hit_close(self, x: int, y: int) -> bool:
-        return (x - CLOSE_CX) ** 2 + (y - CLOSE_CY) ** 2 <= CLOSE_R ** 2
-
-    # ── Queue poll ────────────────────────────────────────────────────────────
+    # ── Queue ────────────────────────────────────────────────────────────────
 
     def _poll(self) -> None:
         try:
@@ -210,166 +215,374 @@ class TranscriptionOverlay:
                 self._apply(state, text)
         except queue.Empty:
             pass
-        self._root.after(POLL_MS, self._poll)
 
-    # ── State transitions ─────────────────────────────────────────────────────
+    # ── State ────────────────────────────────────────────────────────────────
+
+    def _on_cam_frame(self, img: QImage) -> None:
+        self._cam_pixmap = QPixmap.fromImage(img)
+        self.update()
+
+    def _on_wake_greeted(self) -> None:
+        self._wake_greeted = True
+        self.update()
+        # Stay visible until user dismisses (× button or Space + Right Option)
+
+    def _end_wake(self) -> None:
+        self._cam_running = False
+        self._wake_mode = False
+        self._wake_greeted = False
+        self._wake_text = ""
+        self.hide()
+
+    def _start_camera(self) -> None:
+        import time
+        self._cam_running = True
+
+        def _prepare_tts(text: str) -> "str | None":
+            import os, tempfile
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                try:
+                    from openai import OpenAI  # type: ignore[reportMissingImports]
+                    client = OpenAI(api_key=api_key)
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                        path = f.name
+                    with client.audio.speech.with_streaming_response.create(
+                        model="tts-1-hd", voice="nova", input=text, speed=1.0,
+                    ) as resp:
+                        resp.stream_to_file(path)
+                    return path
+                except Exception as e:
+                    print(f"[tts] OpenAI failed: {e} — falling back to say")
+            return None
+
+        def _play_tts(path: "str | None", text: str) -> None:
+            import os, subprocess
+            if path:
+                subprocess.run(["afplay", path], check=True)
+                os.unlink(path)
+            else:
+                subprocess.run(["say", "-v", "Flo (English (US))", "-r", "160", text])
+
+        def _loop() -> None:
+            cap = cv2.VideoCapture(0)
+            face_first: float | None = None
+            greeted = False
+            tts_started = False
+            greeting = (
+                f"{_time_greeting()}, {USER_NAME}. "
+                "While you were asleep I've been busy — "
+                "I found some great opportunities and took care of a few things. "
+                "Let me walk you through them."
+            )
+
+            while self._cam_running:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                frame = cv2.flip(frame, 1)
+                grey  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = _CASCADE.detectMultiScale(grey, 1.1, 5, minSize=(60, 60))
+
+                if len(faces) > 0 and not greeted and not tts_started:
+                    if face_first is None:
+                        face_first = time.time()
+                    if time.time() - face_first >= 1.2:
+                        greeted = True
+                        tts_started = True
+                        def _greet_sync(g=greeting) -> None:
+                            # Pre-generate audio first, then show text + play simultaneously
+                            audio_path = _prepare_tts(g)
+                            self._cam_bridge.greeted.emit()
+                            threading.Thread(target=_play_tts, args=(audio_path, g), daemon=True).start()
+                        threading.Thread(target=_greet_sync, daemon=True).start()
+                elif not greeted and not tts_started:
+                    face_first = None
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                fh, fw = rgb.shape[:2]
+                img = QImage(rgb.data, fw, fh, fw * 3, QImage.Format.Format_RGB888).copy()
+                self._cam_bridge.frame_ready.emit(img)
+
+            cap.release()
+
+        threading.Thread(target=_loop, daemon=True).start()
 
     def _apply(self, state: str, text: str) -> None:
-        for attr in ("_auto_hide_id", "_pulse_id"):
-            h = getattr(self, attr)
-            if h:
-                self._root.after_cancel(h)
-                setattr(self, attr, None)
+        self._autohide_timer.stop()
+        self._pulse_timer.stop()
 
         if state == "hidden":
-            self._win.withdraw()
+            self._do_hide()
+            return
+
+        if state == "wake":
+            self._wake_mode = True
+            self._wake_greeted = False
+            self._wake_text = ""
+            self._reposition(W_WAKE, H_WAKE)
+            self.show()
+            self.raise_()
+            self._start_camera()
             return
 
         if state == "recording":
             self._history.clear()
-            self._win.deiconify()
-            self._win.lift()
-            self._redraw_recording()
-            self._pulse_tick()
+            self._recording = True
+            self._pulse_on = True
+            if not self._wake_mode:
+                self._set_size(W_PILL, H_PILL)
+            self.show()
+            self.raise_()
+            self._pulse_timer.start(PULSE_MS)
+            self.update()
             return
+
+        self._recording = False
 
         if state == "transcribing":
-            colour, display = ACCENT_YELLOW, "Transcribing…"
+            self._history.append(("Transcribing...", YELLOW, "status"))
         elif state == "transcript":
-            colour, display = TEXT_FG, text
-            self._history.append((display, colour))
+            self._history.append((text, FG, "user"))
         elif state == "intent":
-            colour, display = ACCENT_BLUE, text
-            self._history.append((display, colour))
+            self._history.append((text, BLUE, "status"))
         elif state == "action":
-            colour, display = ACCENT_GREEN, text
-            self._history.append((display, colour))
+            self._history.append((text, GREEN, "assistant"))
         elif state == "done":
-            colour, display = ACCENT_GREEN, "✓  Done"
-            self._history.append((display, colour))
-            self._auto_hide_id = self._root.after(AUTO_HIDE_MS, self._win.withdraw)
+            self._history.append(("✓  Done", GREEN, "assistant"))
+            self._autohide_timer.start(AUTOHIDE_MS)
         elif state == "error":
-            colour, display = ACCENT_RED, text or "Error"
-            self._history.append((display, colour))
-            self._auto_hide_id = self._root.after(AUTO_HIDE_MS, self._win.withdraw)
+            self._history.append((text or "Error", ERR, "status"))
+            self._autohide_timer.start(AUTOHIDE_MS)
         else:
-            colour, display = TEXT_FG, text
+            self._history.append((text, FG, "assistant"))
 
-        self._win.deiconify()
-        self._win.lift()
-        self._redraw_history()
+        self._history = self._history[-MAX_HIST:]
+        self._set_size(W_FULL, self._calc_height())
+        self._present()
+        self.update()
 
-    # ── Canvas rendering ──────────────────────────────────────────────────────
+    def _calc_height(self) -> int:
+        h = 20
+        for text, _, kind in self._history:
+            lines = max(1, (len(text) + 48) // 49)
+            h += (lines * 22 + 24) if kind != "status" else 40
+        return min(MAX_H, max(H_PILL, h + 20))
 
-    def _draw_shell(self, h: int) -> None:
-        """Draw glass background + close button — shared by all states."""
-        c = self._canvas
-        # Outer glass body
-        _rrect(c, 0, 0, W, h, RADIUS,
-               fill=GLASS_FILL, outline=GLASS_BORDER, width=1)
-        # Subtle inner highlight rim (top edge only, faint)
-        _rrect(c, 1, 1, W-1, h-1, RADIUS-1,
-               fill="", outline="#28282C", width=1)
+    def _set_size(self, w: int, h: int) -> None:
+        self._reposition(w, h)
 
-        self._redraw_close(self._close_hot)
+    def _reposition(self, w: int, h: int) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            x = geo.center().x() - w // 2
+            y = geo.top() + MARGIN
+            self.setGeometry(x, y, w, h)
+        else:
+            self.resize(w, h)
 
-    def _redraw_close(self, hot: bool) -> None:
-        c = self._canvas
-        c.delete("close")
-        cx, cy, r = CLOSE_CX, CLOSE_CY, CLOSE_R
-        bg = CLOSE_BG_HOT if hot else CLOSE_BG
-        c.create_oval(cx-r, cy-r, cx+r, cy+r,
-                      fill=bg, outline="", tags="close")
-        c.create_text(cx, cy+0.5,
-                      text="×", fill=CLOSE_FG,
-                      font=self._f_close, anchor="center", tags="close")
+    # ── Paint ─────────────────────────────────────────────────────────────────
 
-    def _redraw_recording(self) -> None:
-        c = self._canvas
-        c.delete("all")
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
 
-        line_h = self._f_body.metrics("linespace") + 6
-        h = PT + line_h + PB + 32
+        w, h = self.width(), self.height()
+        vibrancy = getattr(self, "_vibrancy_active", False)
 
-        self._win.geometry(f"{W}x{h}")
-        c.configure(width=W, height=h)
-        self._draw_shell(h)
+        shell = QPainterPath()
+        shell.addRoundedRect(QRect(0, 0, w, h), R, R)
 
-        # Header label — centred
-        c.create_text(
-            W // 2, PT + 2,
-            text="Ali  ·  Listening",
-            anchor="n", fill=HEADER_FG, font=self._f_label,
+        # ── Wake / call mode — camera feed + greeting ────────────────────────
+        if self._wake_mode:
+            self._paint_wake(p, w, h, shell)
+            return
+
+        # ── 1. Soft drop shadow (two offset layers for bloom) ─────────────────
+        for offset, alpha in ((4, 14), (2, 8)):
+            s = QPainterPath()
+            s.addRoundedRect(QRect(offset // 2, offset, w - offset, h), R, R)
+            p.fillPath(s, QColor(0, 0, 0, alpha))
+
+        # ── 2. Glass body — translucent liquid tint ────────────────────────────
+        if vibrancy:
+            p.fillPath(shell, QColor(255, 255, 255, 18))
+        else:
+            p.fillPath(shell, QColor(34, 38, 48, 118))  # translucent fallback
+
+        # ── 3. Border — soft glass edge ───────────────────────────────────────
+        border = QLinearGradient(0, 0, 0, h)
+        border.setColorAt(0.0, QColor(255, 255, 255, 68))
+        border.setColorAt(0.5, QColor(210, 220, 240, 44))
+        border.setColorAt(1.0, QColor(156, 168, 188, 30))
+        p.setPen(QPen(QBrush(border), 1.2))
+        p.drawPath(shell)
+
+        # ── 4. Inner contour — slight edge depth with low opacity ─────────────
+        inner = QPainterPath()
+        inner.addRoundedRect(QRect(1, 1, w - 2, h - 2), R - 1, R - 1)
+        inner_hi = QLinearGradient(0, 1, 0, h)
+        inner_hi.setColorAt(0.0, QColor(255, 255, 255, 38))
+        inner_hi.setColorAt(1.0, QColor(110, 122, 146, 24))
+        p.setPen(QPen(QBrush(inner_hi), 0.8))
+        p.drawPath(inner)
+
+        # ── 5. Content ────────────────────────────────────────────────────────
+        if self._recording:
+            self._paint_pill(p)
+        else:
+            self._paint_expanded(p)
+
+    def _paint_pill(self, p: QPainter) -> None:
+        w, h = self.width(), self.height()
+        cy = h // 2
+
+        # Blinking dot
+        p.setPen(Qt.PenStyle.NoPen)
+        dot = RED if self._pulse_on else QColor(200, 80, 76, 80)
+        p.setBrush(dot)
+        p.drawEllipse(QPoint(26, cy), 8, 8)
+
+        # Mic icon
+        self._draw_mic(p, 52, cy)
+
+        # Label
+        p.setPen(FG)
+        p.setFont(self._font_label)
+        p.drawText(
+            QRect(74, cy - 12, w - 90, 24),
+            Qt.AlignmentFlag.AlignVCenter,
+            "Listening...",
         )
 
-        # Pulsing dot + hint row
-        cy = PT + 26 + 14
-        self._ring_cy = cy
-        self._ring_x  = PX + 28
-        self._redraw_ring(ACCENT_RED)
+    def _paint_wake(self, p: QPainter, w: int, h: int, shell: QPainterPath) -> None:
+        # Glass background
+        p.fillPath(shell, QColor(18, 18, 22, 210))
+        border = QLinearGradient(0, 0, 0, h)
+        border.setColorAt(0, QColor(255, 255, 255, 70))
+        border.setColorAt(1, QColor(255, 255, 255, 20))
+        p.setPen(QPen(QBrush(border), 1.2))
+        p.drawPath(shell)
 
-        c.create_text(
-            self._ring_x + 22, cy,
-            text="Hold Right Shift to record  ·  Space + Right Shift to dismiss",
-            anchor="w", fill=HEADER_FG, font=self._f_label,
-        )
+        pad = 16
+        cam_x, cam_y = pad, (h - CAM_H) // 2
 
-    def _redraw_ring(self, colour: str) -> None:
-        c = self._canvas
-        c.delete("ring")
-        cx, cy, r = self._ring_x, self._ring_cy, 5
-        c.create_oval(cx-r, cy-r, cx+r, cy+r,
-                      fill=colour, outline="", tags="ring")
+        # Camera feed (rounded)
+        if not self._cam_pixmap.isNull():
+            cam_path = QPainterPath()
+            cam_path.addRoundedRect(QRect(cam_x, cam_y, CAM_W, CAM_H), 14, 14)
+            p.setClipPath(cam_path)
+            scaled = self._cam_pixmap.scaled(
+                CAM_W, CAM_H,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            ox = (scaled.width()  - CAM_W) // 2
+            oy = (scaled.height() - CAM_H) // 2
+            p.drawPixmap(cam_x - ox, cam_y - oy, scaled)
+            p.setClipping(False)
+            p.setPen(QPen(QColor(255, 255, 255, 50), 1))
+            p.drawPath(cam_path)
+        else:
+            p.fillRect(QRect(cam_x, cam_y, CAM_W, CAM_H), QColor(40, 40, 44))
+
+        # Recording indicator (top-right corner when listening)
+        if self._recording:
+            dot_color = RED if self._pulse_on else QColor(200, 80, 76, 80)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(dot_color)
+            p.drawEllipse(QPoint(w - 20, 16), 6, 6)
+            p.setPen(DIM)
+            p.setFont(self._font_small)
+            p.drawText(QRect(w - 110, 8, 82, 16), Qt.AlignmentFlag.AlignRight, "Listening…")
+
+        # Text area (right of camera)
+        tx = cam_x + CAM_W + pad
+        tw = w - tx - pad
+
+        if not self._wake_greeted:
+            p.setPen(DIM)
+            p.setFont(self._font_small)
+            p.drawText(QRect(tx, cam_y + 10, tw, 30), Qt.AlignmentFlag.AlignLeft, "Ali is watching...")
+            # progress dots
+            p.setPen(FG)
+            p.setFont(self._font_body)
+            p.drawText(QRect(tx, cam_y + 50, tw, 30), Qt.AlignmentFlag.AlignLeft, "Detecting face...")
+        else:
+            p.setPen(GREEN)
+            p.setFont(self._font_label)
+            p.drawText(QRect(tx, cam_y + 8, tw, 28), Qt.AlignmentFlag.AlignLeft,
+                       f"{_time_greeting()}, {USER_NAME}!")
+            p.setPen(FG)
+            p.setFont(self._font_small)
+            p.drawText(
+                QRect(tx, cam_y + 44, tw, CAM_H - 50),
+                Qt.TextFlag.TextWordWrap,
+                "While you were asleep I've been busy — I found great opportunities and took care of things.",
+            )
+
+    def _draw_mic(self, p: QPainter, cx: int, cy: int) -> None:
+        pen = QPen(DIM, 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        body = QPainterPath()
+        body.addRoundedRect(cx - 5, cy - 10, 10, 14, 5, 5)
+        p.drawPath(body)
+        p.drawArc(QRect(cx - 8, cy + 2, 16, 9), 180 * 16, -180 * 16)
+        p.drawLine(QPoint(cx, cy + 11), QPoint(cx, cy + 15))
+        p.drawLine(QPoint(cx - 5, cy + 15), QPoint(cx + 5, cy + 15))
+
+    def _paint_expanded(self, p: QPainter) -> None:
+        w = self.width()
+
+        # Close ×
+        p.setPen(DIM)
+        p.setFont(self._font_close)
+        p.drawText(QRect(w - 36, 8, 22, 22), Qt.AlignmentFlag.AlignCenter, "×")
+
+        y = 14
+        for text, colour, kind in self._history:
+            lines = max(1, (len(text) + 48) // 49)
+            bh = lines * 22 + 20 if kind != "status" else 38
+
+            bx, bw = 12, w - 24
+            bub_alpha = 16 if kind == "user" else 10 if kind == "assistant" else 8
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, bub_alpha))
+            p.drawRoundedRect(bx, y, bw, bh, 12, 12)
+
+            p.setPen(colour)
+            p.setFont(self._font_body if kind != "status" else self._font_small)
+            p.drawText(
+                QRect(bx + 14, y + 8, bw - 24, bh - 12),
+                Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
+            y += bh + 8
+
+    # ── Timers ────────────────────────────────────────────────────────────────
 
     def _pulse_tick(self) -> None:
-        if not self._pulse_id and not self._win.winfo_ismapped():
-            return
-        self._pulse_state = not self._pulse_state
-        col = ACCENT_RED if self._pulse_state else GLASS_FILL
-        self._redraw_ring(col)
-        self._pulse_id = self._root.after(PULSE_MS, self._pulse_tick)
+        if self.isVisible():
+            self._pulse_on = not self._pulse_on
+            self.update()
 
-    def _redraw_history(self) -> None:
-        c = self._canvas
-        c.delete("all")
+    def _do_hide(self) -> None:
+        self._pulse_timer.stop()
+        self._autohide_timer.stop()
+        self._recording = False
+        self.hide()
 
-        recent  = self._history[-MAX_HISTORY:]
-        line_h  = self._f_body.metrics("linespace") + 6
-        h = PT + 22 + len(recent) * (line_h + 4) + PB
-        h = max(h, 78)
-
-        self._win.geometry(f"{W}x{h}")
-        c.configure(width=W, height=h)
-        self._draw_shell(h)
-
-        # Centred "Ali" header
-        c.create_text(
-            W // 2, PT + 2,
-            text="Ali",
-            anchor="n", fill=HEADER_FG, font=self._f_label,
-        )
-
-        y = PT + 26
-        for i, (text, colour) in enumerate(recent):
-            is_latest = i == len(recent) - 1
-            fnt = self._f_body if is_latest else self._f_small
-            fg  = colour       if is_latest else HEADER_FG
-            c.create_text(
-                PX + 4, y,
-                text=text, anchor="nw",
-                fill=fg, font=fnt,
-                width=W - (PX + 4) * 2,
-            )
-            lines = max(1, len(text) // 40 + 1)
-            y += fnt.metrics("linespace") * lines + 6
-
-    # ── Hide ──────────────────────────────────────────────────────────────────
-
-    def _hide(self) -> None:
-        if self._pulse_id:
-            self._root.after_cancel(self._pulse_id)
-            self._pulse_id = None
-        if self._auto_hide_id:
-            self._root.after_cancel(self._auto_hide_id)
-            self._auto_hide_id = None
-        self._win.withdraw()
+    def _present(self) -> None:
+        """
+        Show overlay above the current app/space without activating a new space.
+        """
+        self.show()
+        try:
+            ns_win = getattr(self, "_ns_window", None)
+            if ns_win is not None:
+                ns_win.orderFrontRegardless()
+        except Exception:
+            pass

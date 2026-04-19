@@ -1,7 +1,6 @@
 """
 Layer 1 — Voice Capture
-Push-to-talk: hold Right Shift to record, release to stop.
-(Option key avoided — conflicts with Omi which also uses it.)
+Push-to-talk: hold Right Option to record, release to stop.
 Yields raw audio bytes for each completed utterance.
 """
 
@@ -11,8 +10,8 @@ import threading
 import wave
 from typing import AsyncGenerator
 
-import pyaudio
-from pynput import keyboard
+import pyaudio  # pyright: ignore[reportMissingModuleSource]
+from pynput import keyboard  # pyright: ignore[reportMissingModuleSource]
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -20,8 +19,7 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 
 # The hotkey that triggers recording
-# Right Shift — avoids conflict with Omi which also captures Option/alt
-TRIGGER_KEY = keyboard.Key.shift_r
+TRIGGER_KEY = keyboard.Key.alt_r
 
 
 async def listen_for_command(overlay=None) -> AsyncGenerator[bytes, None]:
@@ -34,7 +32,7 @@ async def listen_for_command(overlay=None) -> AsyncGenerator[bytes, None]:
     without needing the asyncio event loop.
 
     overlay: optional TranscriptionOverlay — if provided, push("recording") is
-             called from the keyboard thread the instant Right Shift is pressed.
+             called from the keyboard thread the instant Right Option is pressed.
     """
     audio = pyaudio.PyAudio()
     input_device = _get_active_input_device(audio)
@@ -55,7 +53,7 @@ async def listen_for_command(overlay=None) -> AsyncGenerator[bytes, None]:
 
     def on_press(key):
         held_keys.add(key)
-        # Space + Right Shift → dismiss overlay
+        # Space + Right Option → dismiss overlay
         if key in (TRIGGER_KEY, keyboard.Key.space) and \
                 TRIGGER_KEY in held_keys and keyboard.Key.space in held_keys:
             if overlay:
@@ -76,7 +74,7 @@ async def listen_for_command(overlay=None) -> AsyncGenerator[bytes, None]:
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
-    print("[voice] Ready — hold Right Shift to speak, release to send")
+    print("[voice] Ready — hold Right Option to speak, release to send")
 
     loop = asyncio.get_event_loop()
 
@@ -88,7 +86,7 @@ async def listen_for_command(overlay=None) -> AsyncGenerator[bytes, None]:
             stop_flag.clear()
             is_recording.set()
 
-            print("[voice] Recording... (release Right Shift to stop)")
+            print("[voice] Recording... (release Right Option to stop)")
             frames = []
 
             stream = audio.open(
