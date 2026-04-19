@@ -116,11 +116,30 @@ actor CactusTranscriber: CactusTranscribing {
     ) {
         self.modelHandleProvider = modelHandleProvider
         self.transcribeFunction = transcribeFunction
+        NSLog("[STT] CactusTranscriber initialized with provider: %@", String(describing: type(of: modelHandleProvider)))
+
+        // Verify Parakeet bundle resource exists at init time
+        if let parakeetPath = Bundle.main.path(forResource: "ParakeetCTC", ofType: nil) {
+            NSLog("[STT] ✅ ParakeetCTC found in bundle at: %@", parakeetPath)
+        } else {
+            NSLog("[STT] ❌ ParakeetCTC NOT found in app bundle — STT will fail. Bundle path: %@", Bundle.main.bundlePath)
+            // List top-level bundle contents for debugging
+            if let contents = try? FileManager.default.contentsOfDirectory(atPath: Bundle.main.bundlePath) {
+                let relevant = contents.filter { $0.contains("Parakeet") || $0.contains("cactus") || $0.hasSuffix(".weights") }
+                NSLog("[STT] Bundle contents (relevant): %@", relevant.isEmpty ? "(none)" : relevant.joined(separator: ", "))
+            }
+        }
     }
 
     func transcribePCM16kMono(_ pcmData: Data) async throws -> String {
         NSLog("[STT] Loading model via %@", String(describing: type(of: modelHandleProvider)))
-        let modelHandle = try await modelHandleProvider.provideModelHandle()
+        let modelHandle: CactusModelT
+        do {
+            modelHandle = try await modelHandleProvider.provideModelHandle()
+        } catch {
+            NSLog("[STT] ⚠️ Primary model failed (%@), falling back to Gemma", error.localizedDescription)
+            modelHandle = try await CactusModelInitializationService.shared.provideModelHandle()
+        }
         NSLog("[STT] Model handle acquired, transcribing %d bytes of PCM audio", pcmData.count)
         let responseJSON = try transcribeFunction(modelHandle, pcmData)
         NSLog("[STT] Raw response: %@", responseJSON.prefix(200).description)
