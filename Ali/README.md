@@ -185,15 +185,47 @@ python main.py
 
 Hold **Option** (or click the menu bar button) and speak your command.
 
-On **first launch**, Ali builds a laptop-wide disk index (~1–5 min depending on
-how much is in your home directory). The index lives at `~/.cache/ali/index/`
-and is reused on subsequent runs. To force a rebuild:
+On **first launch**, Ali builds a focused content index. The default scope is:
+
+- `~/Documents`, `~/Downloads`, `~/Desktop`
+- `/Applications` (so "open Slack" works)
+- **Contacts** (via Contacts.app — the running terminal needs Contacts
+  permission)
+- **Calendar** (reads `.ics` files under `~/Library/Calendars/` — needs Full
+  Disk Access)
+- **Messages** (reads `~/Library/Messages/chat.db` — needs Full Disk Access,
+  last 365 days by default)
+
+To widen the filesystem scope to the full home directory:
+
+```bash
+python main.py --full-disk
+# or:
+ALI_INDEX_FULL_DISK=1 python main.py
+```
+
+The index lives at `~/.cache/ali/index/` and is reused on subsequent runs
+(incrementally — unchanged files are skipped, only new/modified files get
+re-embedded). To force a clean rebuild:
 
 ```bash
 python main.py --rebuild-index
 ```
 
 …or click **Rebuild Index…** in the menu bar.
+
+To tune which non-filesystem sources are pulled in:
+
+```bash
+# disable messages only
+ALI_INDEX_SOURCES="contacts,calendar" python main.py
+
+# index none of them
+ALI_INDEX_SOURCES="" python main.py
+
+# shorter history for Messages/Calendar
+ALI_INDEX_SOURCE_HISTORY_DAYS=30 python main.py
+```
 
 With the index in place Ali can answer questions grounded in your files,
 entirely on-device via Gemma 4 (Cactus):

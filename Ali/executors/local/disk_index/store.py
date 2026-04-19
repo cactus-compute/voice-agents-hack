@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = "1"
+
+# Bump whenever the schema changes in a way older builds can't handle.
+# v2 adds `chunks.vector` (nullable BLOB) + the idx_chunks_novec partial index.
+SCHEMA_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -63,9 +66,28 @@ def connect(db_path: Path, *, create: bool = False) -> sqlite3.Connection:
 def _init_schema(conn: sqlite3.Connection) -> None:
     sql = _SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(sql)
+    _run_migrations(conn)
     conn.execute(
         "INSERT OR REPLACE INTO manifest(key, value) VALUES ('schema_version', ?)",
         (SCHEMA_VERSION,),
+    )
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Bring an older on-disk schema up to the current version in-place.
+
+    We prefer idempotent ALTER TABLE migrations over wipe-on-mismatch so users
+    who've already paid the full first-build cost don't get knocked back to
+    zero when we add a column.
+    """
+    cols = conn.execute("PRAGMA table_info(chunks)").fetchall()
+    col_names = {row["name"] for row in cols}
+    if "vector" not in col_names:
+        conn.execute("ALTER TABLE chunks ADD COLUMN vector BLOB")
+    # Partial index on chunks missing a vector — safe to recreate.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_novec "
+        "ON chunks(id) WHERE vector IS NULL"
     )
 
 
@@ -115,6 +137,92 @@ def upsert_file(
 
 def clear_chunks(conn: sqlite3.Connection, file_id: int) -> None:
     conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))
+
+
+def lookup_file(
+    conn: sqlite3.Connection, path: str
+) -> tuple[int, float | None] | None:
+    """Return (file_id, stored_mtime) for `path`, or None if unknown."""
+    row = conn.execute(
+        "SELECT id, mtime FROM files WHERE path = ?", (path,)
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row["id"]), row["mtime"]
+
+
+def iter_all_paths(conn: sqlite3.Connection) -> list[tuple[int, str]]:
+    rows = conn.execute("SELECT id, path FROM files").fetchall()
+    return [(int(r["id"]), str(r["path"])) for r in rows]
+
+
+def delete_file(conn: sqlite3.Connection, file_id: int) -> None:
+    """Drop a file row; ON DELETE CASCADE removes its chunks + FTS entries."""
+    conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+
+
+def count_files(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) AS c FROM files").fetchone()["c"])
+
+
+def count_chunks_needing_embedding(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM chunks WHERE vector IS NULL"
+    ).fetchone()
+    return int(row["c"])
+
+
+def iter_unembedded_chunks(
+    conn: sqlite3.Connection,
+    *,
+    batch_size: int = 256,
+):
+    """Yield (chunk_id, text) pairs for chunks that still need a vector."""
+    last_id = 0
+    while True:
+        rows = conn.execute(
+            """
+            SELECT id, text FROM chunks
+            WHERE vector IS NULL AND id > ?
+            ORDER BY id
+            LIMIT ?
+            """,
+            (last_id, batch_size),
+        ).fetchall()
+        if not rows:
+            return
+        for row in rows:
+            last_id = int(row["id"])
+            yield last_id, str(row["text"])
+
+
+def update_chunk_vectors(
+    conn: sqlite3.Connection,
+    items: list[tuple[int, bytes]],
+) -> None:
+    """Bulk UPDATE of chunk vectors. `items` is [(chunk_id, float32_blob), …]."""
+    if not items:
+        return
+    conn.executemany(
+        "UPDATE chunks SET vector = ? WHERE id = ?",
+        [(blob, cid) for cid, blob in items],
+    )
+
+
+def iter_embedded_chunks(conn: sqlite3.Connection):
+    """Yield (chunk_id, vector_blob) for every chunk that has an embedding."""
+    cur = conn.execute(
+        "SELECT id, vector FROM chunks WHERE vector IS NOT NULL ORDER BY id"
+    )
+    for row in cur:
+        yield int(row["id"]), bytes(row["vector"])
+
+
+def count_embedded_chunks(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM chunks WHERE vector IS NOT NULL"
+    ).fetchone()
+    return int(row["c"])
 
 
 def insert_chunks(

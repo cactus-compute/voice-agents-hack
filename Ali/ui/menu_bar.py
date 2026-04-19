@@ -1,7 +1,13 @@
 """
 Layer 5 — macOS Menu Bar
-Shows a status icon in the menu bar and provides a push-to-talk button.
-Uses rumps (macOS-only). Falls back to a no-op stub on other platforms.
+
+Minimal status indicator + "Rebuild Index…" menu item. Uses rumps
+(macOS-only). Falls back to a no-op stub on other platforms.
+
+Indexing progress is intentionally *not* surfaced in the menu bar title —
+the terminal already shows a tqdm bar and the per-event log. The menu bar
+only toggles between the coarse agent states (ready / transcribing /
+parsing / running / indexing / error).
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ class MenuBar:
     def set_status(self, status: str):
         icon = STATUS_ICONS.get(status, "●")
         label = f"{icon} {status.capitalize()}"
-        if self._app:
+        if self._app is not None:
             self._app.title = label
         else:
             print(f"[menu_bar] {label}")
@@ -56,20 +62,11 @@ class MenuBar:
         def _worker() -> None:
             self.set_status("indexing")
             try:
-                proc = subprocess.run(
-                    [sys.executable, str(_BUILD_SCRIPT)],
-                    cwd=str(_BUILD_SCRIPT.parent.parent),
-                )
-                if proc.returncode == 0:
-                    print("[menu_bar] index rebuild complete")
-                    try:
-                        from executors.local.disk_index import reset_handle
+                from config.index_bootstrap import ensure_index
 
-                        reset_handle()
-                    except Exception:
-                        pass
-                else:
-                    print(f"[menu_bar] index rebuild failed (rc={proc.returncode})")
+                ensure_index(force_rebuild=True, background=False)
+            except Exception as exc:
+                print(f"[menu_bar] rebuild failed: {exc}")
             finally:
                 self.set_status("ready")
 

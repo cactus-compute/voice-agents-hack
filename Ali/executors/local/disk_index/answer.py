@@ -85,9 +85,22 @@ async def answer_question(
 
 
 _SYSTEM = (
-    "You are Ali, an on-device assistant. Answer the user's question in ONE or TWO "
-    "spoken sentences. Use ONLY the facts in the context below. If the context "
-    "doesn't answer the question, say so plainly. No lists, no markdown."
+    "You are Ali, the user's personal on-device assistant. You know the user "
+    "through their profile (macOS account info, Contacts, resume snippets) "
+    "and through snippets retrieved from their files / calendar / messages.\n"
+    "\n"
+    "Rules:\n"
+    "• Answer in ONE or TWO natural spoken sentences — no lists, no markdown, "
+    "  no preamble like \"based on the context\".\n"
+    "• For identity questions (who am I, my name, my email, where I live, "
+    "  where I work, my phone number): the USER PROFILE is authoritative. "
+    "  Use it directly and confidently.\n"
+    "• For questions about files, notes, events, conversations: use the "
+    "  EXCERPTS. Cite information only if it's actually there.\n"
+    "• Never say \"the context does not contain…\" or similar. If you truly "
+    "  can't answer, say what you'd need (e.g. \"I don't see an answer in "
+    "  your recent files — try giving me a filename\").\n"
+    "• Prefer profile facts over excerpts when they conflict."
 )
 
 
@@ -99,22 +112,43 @@ def _build_prompt(
 ) -> str:
     parts: list[str] = [_SYSTEM, ""]
 
+    parts.append("USER PROFILE")
     if profile:
-        parts.append("User profile:")
         parts.append(_profile_block(profile))
-        parts.append("")
+    else:
+        parts.append(
+            "(profile not yet built — disk index is still building. Fall back "
+            "to the excerpts for this one.)"
+        )
+    parts.append("")
 
     if hits:
-        parts.append("Excerpts from the user's files (most relevant first):")
+        parts.append("EXCERPTS from the user's files / data (most relevant first):")
         for i, hit in enumerate(hits, 1):
             mtime = _fmt_mtime(hit.mtime)
-            parts.append(f"[{i}] {hit.path}  (modified {mtime})")
+            label = _hit_label(hit)
+            parts.append(f"[{i}] {label}  (modified {mtime})")
             parts.append(hit.snippet.strip())
             parts.append("")
+    else:
+        parts.append("EXCERPTS: (no matching excerpts for this question)")
+        parts.append("")
 
     parts.append(f"Question: {transcript}")
     parts.append("Answer:")
     return "\n".join(parts)
+
+
+def _hit_label(hit: Hit) -> str:
+    """Pretty label for a source row — useful so the LLM knows where the
+    snippet came from (a contact vs a calendar event vs a PDF)."""
+    if hit.path.startswith("ali://contacts/"):
+        return f"Contact: {hit.name}"
+    if hit.path.startswith("ali://calendar/"):
+        return f"Calendar event: {hit.name}"
+    if hit.path.startswith("ali://messages/"):
+        return f"Chat transcript with {hit.name}"
+    return hit.path
 
 
 def _profile_block(profile: dict[str, Any]) -> str:
@@ -153,6 +187,15 @@ def _fmt_mtime(mtime: float | None) -> str:
 async def _call_cactus(prompt: str, model: str) -> str:
     if not _CACTUS_CLI:
         return ""
+    # The first `cactus run` of a session has to load Gemma 4 (~2B params,
+    # a few hundred MB) from disk before it can generate. On an M-series
+    # laptop this can take 30-60s cold; after that it usually falls under
+    # ~3s. Use a generous timeout so the first voice query doesn't fall
+    # straight through to the stub fallback.
+    # `cactus run --prompt` answers the prompt, then drops into an interactive
+    # chat REPL. We pipe "exit" on stdin so the process terminates after one
+    # turn instead of hanging on the "You:" prompt.
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             _CACTUS_CLI,
@@ -160,15 +203,60 @@ async def _call_cactus(prompt: str, model: str) -> str:
             model,
             "--prompt",
             prompt,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-    except (OSError, asyncio.TimeoutError, asyncio.CancelledError):
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=b"exit\n"), timeout=90
+        )
+    except asyncio.TimeoutError:
+        print("[answer][warn] cactus timed out after 90s")
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return ""
+    except (OSError, asyncio.CancelledError) as exc:
+        print(f"[answer][warn] cactus subprocess failed: {exc}")
         return ""
     if proc.returncode != 0:
+        print(
+            "[answer][warn] cactus rc=%d stderr=%s"
+            % (proc.returncode, stderr.decode("utf-8", errors="ignore").strip()[:200])
+        )
         return ""
-    return _clean_reply(stdout.decode("utf-8", errors="ignore"))
+    return _extract_cactus_reply(stdout.decode("utf-8", errors="ignore"))
+
+
+def _extract_cactus_reply(output: str) -> str:
+    """Pull the 'Assistant:' block out of cactus's chat-style stdout."""
+    if not output:
+        return ""
+    marker = "Assistant:"
+    idx = output.find(marker)
+    if idx < 0:
+        return _clean_reply(output)
+    tail = output[idx + len(marker):]
+    lines: list[str] = []
+    for raw in tail.splitlines():
+        stripped = raw.strip()
+        # Stop at the token-stats line, e.g. "[66 tokens | latency: 0.019s | …]".
+        if stripped.startswith("[") and "tok" in stripped and stripped.endswith("]"):
+            break
+        # Stop at the REPL's "You:" separator or divider lines.
+        if stripped.startswith("You:") or (stripped and set(stripped) <= {"-", "=", "─", "━"}):
+            break
+        if stripped.startswith("👋"):
+            break
+        lines.append(stripped)
+    # Trim leading/trailing blanks, then collapse into a single spoken block.
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return _clean_reply(" ".join(line for line in lines if line))
 
 
 async def _call_gemini(prompt: str, api_key: str) -> str:
@@ -220,18 +308,53 @@ def _fallback_answer(
     profile: dict[str, Any] | None,
     hits: list[Hit],
 ) -> str:
-    lowered = transcript.lower()
-    if profile and any(kw in lowered for kw in ("who am i", "my name", "what is my name")):
-        name = profile.get("name") or (profile.get("contacts_me", {}) or {}).get("name")
-        if name:
-            return f"You're {name}."
-    if profile and "email" in lowered:
-        email = profile.get("git_email")
-        emails = (profile.get("contacts_me", {}) or {}).get("emails") or []
-        candidate = email or (emails[0] if emails else None)
-        if candidate:
-            return f"Your email is {candidate}."
+    """Last-resort template-based answerer used only when every LLM backend
+    failed. Covers the most common identity questions so "who am I" still
+    works offline.
+    """
+    lowered = (transcript or "").lower()
+    me = (profile or {}).get("contacts_me") or {}
+
+    def _name() -> str | None:
+        return (profile or {}).get("name") or me.get("name")
+
+    def _email() -> str | None:
+        emails = me.get("emails") or []
+        return (profile or {}).get("git_email") or (emails[0] if emails else None)
+
+    def _phone() -> str | None:
+        phones = me.get("phones") or []
+        return phones[0] if phones else None
+
+    def _org() -> str | None:
+        return me.get("organization") or None
+
+    if profile:
+        if any(kw in lowered for kw in ("who am i", "my name", "what's my name", "whats my name")):
+            n = _name()
+            if n:
+                return f"You're {n}."
+        if "email" in lowered:
+            e = _email()
+            if e:
+                return f"Your email is {e}."
+        if any(kw in lowered for kw in ("phone", "number")):
+            p = _phone()
+            if p:
+                return f"Your phone is {p}."
+        if any(kw in lowered for kw in ("company", "work", "employer", "where do i work")):
+            o = _org()
+            if o:
+                return f"You work at {o}."
+        if any(kw in lowered for kw in ("computer", "mac", "hostname", "machine")):
+            host = (profile or {}).get("hostname")
+            if host:
+                return f"You're on {host}."
+
     if hits:
         top = hits[0]
-        return f"I can't reach the model, but {top.name} looks most relevant."
-    return "I can't reach the model right now, and I don't have that in my index."
+        return f"I can't reach the model right now, but {top.name} looks most relevant."
+    return (
+        "I can't reach the model right now, and nothing in the index matches "
+        "that yet."
+    )

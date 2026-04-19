@@ -28,10 +28,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     chunk_idx   INTEGER NOT NULL,
     text        TEXT    NOT NULL,
+    -- `vector` stores the sentence-transformer embedding as a float32 BLOB.
+    -- NULL = not yet embedded. Lets us resume an interrupted build and
+    -- re-embed only missing chunks.
+    vector      BLOB,
     UNIQUE(file_id, chunk_idx)
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_file   ON chunks(file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_novec  ON chunks(id) WHERE vector IS NULL;
 
 -- Full-text search across chunk bodies, with the file basename included so
 -- "find stripe contract" matches both filename and content hits.

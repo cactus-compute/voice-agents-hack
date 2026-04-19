@@ -249,6 +249,12 @@ def _disk_index_first(
         return None
     if not hits:
         return None
+    # Synthetic data-source hits (Contacts / Calendar / Messages) live under
+    # the ``ali://`` scheme; they're useful for RAG answers but can't be
+    # revealed in Finder, so drop them from the file-reveal candidate list.
+    hits = [h for h in hits if not h.path.startswith("ali://")]
+    if not hits:
+        return None
     q_terms = {t for t in re.split(r"[^A-Za-z0-9]+", query.lower()) if len(t) >= 3}
     preferred, penalised = _preferred_extensions(role, query)
     scored: list[tuple[Path, tuple]] = []

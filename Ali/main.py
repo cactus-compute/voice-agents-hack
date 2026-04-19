@@ -43,11 +43,50 @@ class TranscriptionOverlay(Protocol):
 def _build_overlay() -> tuple["TranscriptionOverlay", Callable[[], None]]:
     backend = os.getenv("ALI_UI_BACKEND", "qt").strip().lower()
     if backend == "qt":
-        from PySide6.QtWidgets import QApplication  # pyright: ignore[reportMissingImports]
-        from ui.overlay import TranscriptionOverlay
+        try:
+            from PySide6.QtWidgets import QApplication  # pyright: ignore[reportMissingImports]
+            from ui.overlay import TranscriptionOverlay
+        except ImportError as exc:
+            print(
+                f"[main][error] Qt overlay unavailable ({exc}). "
+                "Install PySide6 with `pip install -r requirements.txt`, or "
+                "set ALI_UI_BACKEND=web to use the browser overlay.",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            print(
+                f"[main][error] Qt overlay import failed: {exc}. "
+                "Falling back to ALI_UI_BACKEND=web.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return _build_web_overlay()
 
-        app = QApplication(sys.argv)
-        overlay = TranscriptionOverlay(app)
+        try:
+            app = QApplication(sys.argv)
+        except Exception as exc:
+            print(
+                f"[main][error] QApplication could not start: {exc}. "
+                "Falling back to ALI_UI_BACKEND=web.",
+                file=sys.stderr,
+                flush=True,
+            )
+            return _build_web_overlay()
+
+        try:
+            overlay = TranscriptionOverlay(app)
+        except Exception as exc:
+            import traceback
+
+            print(
+                f"[main][error] TranscriptionOverlay init failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc()
+            raise
 
         # av + cv2 both bundle libavdevice with the same ObjC class names.
         # Python's normal teardown kills daemon threads mid-AVFoundation call,
@@ -69,6 +108,10 @@ def _build_overlay() -> tuple["TranscriptionOverlay", Callable[[], None]]:
 
         return overlay, _run_qt
 
+    return _build_web_overlay()
+
+
+def _build_web_overlay() -> tuple["TranscriptionOverlay", Callable[[], None]]:
     from ui.web_overlay import TranscriptionOverlay
 
     overlay = TranscriptionOverlay()
@@ -143,11 +186,7 @@ async def _agent_main(overlay: TranscriptionOverlay) -> None:
                     print(f'      ← "{result.text}" (backend={result.backend}, '
                           f'snippets={result.snippets_used})')
                     overlay.push("assistant", result.text or "I don't have that.")
-                    if result.cited_paths:
-                        cited = ", ".join(
-                            os.path.basename(p) for p in result.cited_paths[:3]
-                        )
-                        overlay.push("cited", cited)
+                    _push_citations(overlay, result.cited_paths)
                     speak(result.text or "I don't have that.")
                     return
 
@@ -162,11 +201,7 @@ async def _agent_main(overlay: TranscriptionOverlay) -> None:
                         if rag.snippets_used > 0 and rag.text:
                             reply = rag.text
                             overlay.push("assistant", reply)
-                            if rag.cited_paths:
-                                cited = ", ".join(
-                                    os.path.basename(p) for p in rag.cited_paths[:3]
-                                )
-                                overlay.push("cited", cited)
+                            _push_citations(overlay, rag.cited_paths)
                             speak(reply)
                             print(f'      ← "{reply}" (rag backend={rag.backend})')
                             return
@@ -430,8 +465,69 @@ def _intent_url(intent) -> str | None:
     return None
 
 
+_SOURCE_LABELS = {
+    "contacts": "Contact",
+    "calendar": "Event",
+    "messages": "Chat",
+}
+
+_MAX_VISIBLE_CITATIONS = 4
+
+
+def _pretty_citation(path: str) -> str:
+    """Turn a stored `files.path` into a human-readable citation label.
+
+    Filesystem paths become the basename; synthetic `ali://` paths become
+    e.g. ``Contact`` / ``Event`` / ``Chat``.
+    """
+    if not isinstance(path, str) or not path:
+        return str(path)
+    if path.startswith("ali://"):
+        try:
+            rest = path[len("ali://") :]
+            source, _id = rest.split("/", 1)
+        except ValueError:
+            return path
+        return _SOURCE_LABELS.get(source, source.title())
+    return os.path.basename(path)
+
+
+def _push_citations(overlay, paths: list[str]) -> None:
+    """Send a structured, clickable citation list to the overlay.
+
+    Payload shape (JSON-encoded in the overlay's string-only channel):
+        [{"label": "resume.pdf", "path": "/Users/…/resume.pdf"}, …]
+
+    The overlay paints each citation as a clickable link chip; clicking
+    opens the underlying file via `open <path>` (or the matching macOS app
+    for synthetic `ali://…` paths).
+    """
+    if not paths:
+        return
+    import json as _json
+
+    items: list[dict] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not isinstance(raw, str) or not raw:
+            continue
+        if raw in seen:
+            continue
+        seen.add(raw)
+        items.append({"label": _pretty_citation(raw), "path": raw})
+        if len(items) >= _MAX_VISIBLE_CITATIONS:
+            break
+    if not items:
+        return
+    overlay.push("cited_paths", _json.dumps(items, ensure_ascii=False))
+
+
 def _reveal_in_finder(path: str) -> None:
     if sys.platform != "darwin":
+        return
+    if not path or path.startswith("ali://"):
+        # Synthetic data-source paths (Contacts, Calendar, Messages) have no
+        # on-disk location to open.
         return
     try:
         import subprocess
@@ -605,7 +701,43 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="force a rebuild of the laptop-wide disk index at startup",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--wait-for-index",
+        action="store_true",
+        help=(
+            "block startup until the index build finishes (default: the "
+            "build runs in the background so you can start querying "
+            "immediately)"
+        ),
+    )
+    parser.add_argument(
+        "--full-disk",
+        action="store_true",
+        help=(
+            "expand the index scope from the focused default (Documents, "
+            "Downloads, Desktop, /Applications, plus Contacts/Calendar/"
+            "Messages) to the full home directory. Requires macOS Full "
+            "Disk Access."
+        ),
+    )
+    parser.add_argument(
+        "--skip-index",
+        action="store_true",
+        help=(
+            "do NOT auto-resume a partial index on startup. Default "
+            "behaviour is to continue an interrupted build in the "
+            "background; use this flag to launch against whatever is on "
+            "disk without touching the index."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    # Propagate --full-disk as an env var so the build subprocess (and any
+    # `from config.settings import INDEX_SCAN_ROOTS` down the stack) sees
+    # the widened scope.
+    if args.full_disk:
+        os.environ["ALI_INDEX_FULL_DISK"] = "1"
+    return args
 
 
 def _warmup_disk_index_embedder() -> None:
@@ -620,24 +752,47 @@ def _warmup_disk_index_embedder() -> None:
         print(f"[index] embedder warmup skipped: {exc}")
 
 
+def _phase(msg: str) -> None:
+    """Timestamped startup phase marker. Uses print(..., flush=True) so the
+    user sees progress even if the terminal has aggressive buffering."""
+    import time as _time
+
+    elapsed = int(_time.time() - _START_TS)
+    print(f"[main +{elapsed:>3}s] {msg}", flush=True)
+
+
+_START_TS = __import__("time").time()
+
+
 def main() -> None:
+    _phase("starting Ali…")
     args = _parse_args()
 
+    _phase("running preflight checks…")
     run_preflight_checks()
-    ensure_index(force_rebuild=args.rebuild_index)
 
+    _phase("checking disk index…")
+    ensure_index(
+        force_rebuild=args.rebuild_index,
+        skip=args.skip_index,
+        background=not args.wait_for_index,
+    )
+
+    _phase("warming up embedder in background…")
     threading.Thread(
         target=_warmup_disk_index_embedder, daemon=True, name="index-warmup"
     ).start()
 
+    _phase("building UI (loads PySide6; takes ~3s first time)…")
     overlay, run_ui = _build_overlay()
 
+    _phase("starting agent thread (loads Whisper; takes ~5s first time)…")
     agent_thread = threading.Thread(target=_run_agent, args=(overlay,), daemon=True)
     agent_thread.start()
 
     # Backtick is handled inside listen_for_command (single pynput listener).
     # Two keyboard.Listener instances on macOS often crash with SIGTRAP.
-    print("[demo] Say 'Ali' or press ` (backtick): tone → then hands-free voice command")
+    _phase("ready — say 'Ali' or press ` (backtick) to speak.")
 
     # Block here on the main thread running the selected UI loop
     run_ui()

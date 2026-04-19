@@ -8,11 +8,25 @@ contributes no chunks.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import shutil
 import subprocess
+import warnings
 from html.parser import HTMLParser
 from pathlib import Path
+
+# pypdf is very chatty on malformed PDFs ("Ignoring wrong pointing object",
+# "incorrect startxref pointer", "Invalid float value", …). They're harmless
+# for our use case (best-effort text extraction) but they flood the terminal
+# and drown out real build progress. Silence them at the logger + warnings
+# level, and redirect any remaining stderr writes during PDF parsing.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("pypdf._cmap").setLevel(logging.ERROR)
+logging.getLogger("pypdf.generic").setLevel(logging.ERROR)
+logging.getLogger("pypdf._reader").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", module=r"pypdf(\..*)?")
 
 _TEXTUTIL = shutil.which("textutil")
 
@@ -20,6 +34,10 @@ _TEXTUTIL = shutil.which("textutil")
 # keeps embedding time bounded.
 _MAX_CHARS = 200_000
 
+# Plain-text extensions that contribute their FULL content to the index.
+# Code and config-like files are deliberately excluded here — we register
+# them in the DB for filename search but never index their bodies (see
+# `_CODE_EXTS` / `is_code_file` below).
 _TEXT_EXTS: frozenset[str] = frozenset(
     {
         "",
@@ -31,47 +49,60 @@ _TEXT_EXTS: frozenset[str] = frozenset(
         ".log",
         ".csv",
         ".tsv",
-        ".json",
-        ".yaml",
-        ".yml",
-        ".toml",
-        ".ini",
-        ".cfg",
-        ".env",
-        ".py",
-        ".pyi",
-        ".rb",
-        ".js",
-        ".mjs",
-        ".cjs",
-        ".jsx",
-        ".ts",
-        ".tsx",
-        ".go",
-        ".rs",
-        ".java",
-        ".kt",
-        ".swift",
-        ".c",
-        ".h",
-        ".hpp",
-        ".cpp",
-        ".cc",
-        ".cs",
-        ".php",
-        ".scala",
-        ".lua",
-        ".sh",
-        ".bash",
-        ".zsh",
-        ".fish",
-        ".ps1",
-        ".sql",
         ".tex",
         ".bib",
         ".srt",
         ".vtt",
-        ".tsv",
+    }
+)
+
+# File types where we index the filename but not the content.
+# Covers source code, config, structured data — i.e. files whose contents
+# are unlikely to be useful RAG context and would otherwise bloat the
+# embedding store with thousands of near-identical snippets.
+_CODE_EXTS: frozenset[str] = frozenset(
+    {
+        # Source code
+        ".py", ".pyi", ".pyx",
+        ".rb",
+        ".js", ".mjs", ".cjs", ".jsx",
+        ".ts", ".tsx",
+        ".go",
+        ".rs",
+        ".java",
+        ".kt", ".kts",
+        ".swift", ".m", ".mm",
+        ".c", ".h", ".hpp", ".cpp", ".cc", ".cxx", ".hxx",
+        ".cs",
+        ".php",
+        ".scala",
+        ".lua",
+        ".pl", ".pm",
+        ".r",
+        ".jl",
+        ".ex", ".exs", ".erl",
+        ".clj", ".cljs",
+        ".hs",
+        ".dart",
+        ".elm",
+        ".zig",
+        ".nim",
+        ".f", ".f90",
+        ".vb",
+        ".groovy",
+        ".coffee",
+        # Shell / scripts
+        ".sh", ".bash", ".zsh", ".fish", ".ps1",
+        ".bat", ".cmd",
+        # Build & package files
+        ".gradle", ".bazel", ".bzl", ".make", ".mk",
+        # Structured data / config files (indexed by name only — we don't
+        # want to RAG over a package-lock.json)
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env",
+        ".sql",
+        ".proto", ".graphql", ".gql",
+        ".dockerfile",
+        ".lock",
     }
 )
 
@@ -84,8 +115,16 @@ _TEXTUTIL_EXTS: frozenset[str] = frozenset(
 
 
 def extract_text(path: Path) -> str:
-    """Return best-effort plain text for this file (possibly empty)."""
+    """Return best-effort plain text for this file (possibly empty).
+
+    Code / config files short-circuit to an empty string even though we
+    recognise them — their filename alone is registered via
+    `filename_index_text()` so they remain findable without bloating the
+    embedding store with source code.
+    """
     ext = path.suffix.lower()
+    if is_code_file(path):
+        return ""
     try:
         if ext in _TEXT_EXTS:
             return _read_text(path)
@@ -102,6 +141,25 @@ def extract_text(path: Path) -> str:
     return ""
 
 
+def is_code_file(path: Path) -> bool:
+    """Extensions where we want filename-only indexing."""
+    return path.suffix.lower() in _CODE_EXTS
+
+
+def filename_index_text(path: Path) -> str:
+    """Synthetic 'content' used for code/config files.
+
+    Stored as a single chunk so FTS5 can match on the filename and a few
+    path components. Keep it compact — the goal is findability, not RAG."""
+    name = path.name
+    stem = path.stem
+    # Include the last two path components so searches like "utils parser"
+    # can find `myproj/utils/parser.py` via content_fts.
+    parents = [p for p in path.parts[-3:-1]]
+    tokens = [name, stem] + parents
+    return " ".join(t for t in tokens if t)
+
+
 def _read_text(path: Path) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -115,23 +173,28 @@ def _read_pdf(path: Path) -> str:
         from pypdf import PdfReader  # type: ignore
     except ImportError:
         return ""
-    try:
-        reader = PdfReader(str(path))
-    except Exception:
-        return ""
-    out: list[str] = []
-    total = 0
-    for page in reader.pages:
+
+    # Some pypdf code paths write directly to sys.stderr instead of logging.
+    # Suppress those writes for the duration of the parse so malformed PDFs
+    # don't corrupt the tqdm progress bar or spam the terminal.
+    with contextlib.redirect_stderr(open(os.devnull, "w")):
         try:
-            text = page.extract_text() or ""
+            reader = PdfReader(str(path), strict=False)
         except Exception:
-            text = ""
-        if not text:
-            continue
-        out.append(text)
-        total += len(text)
-        if total >= _MAX_CHARS:
-            break
+            return ""
+        out: list[str] = []
+        total = 0
+        for page in reader.pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
+            if not text:
+                continue
+            out.append(text)
+            total += len(text)
+            if total >= _MAX_CHARS:
+                break
     return "\n".join(out)[:_MAX_CHARS]
 
 
@@ -247,3 +310,8 @@ def is_text_like(path: Path) -> bool:
     return path.suffix.lower() in (
         _TEXT_EXTS | _HTML_EXTS | _PDF_EXTS | _DOCX_EXTS | _TEXTUTIL_EXTS
     )
+
+
+def is_indexable(path: Path) -> bool:
+    """Whether `path` contributes any row at all (filename or content)."""
+    return is_text_like(path) or is_code_file(path)

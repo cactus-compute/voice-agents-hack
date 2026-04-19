@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 from pathlib import Path
@@ -12,6 +13,7 @@ from config.settings import CHROME_PROFILE_PATH, GEMINI_API_KEY, VISION_ARTIFACT
 
 def run_preflight_checks() -> None:
     """Validate key runtime prerequisites before starting the loop."""
+    print("[preflight] running startup checks…", flush=True)
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -64,20 +66,26 @@ def run_preflight_checks() -> None:
 
 
 def _module_available(module_name: str) -> bool:
+    """Check whether `module_name` can be imported, WITHOUT actually importing it.
+
+    We previously used `__import__(module_name)` which fully loads the module
+    and its native deps. For `faster_whisper` that cascade alone cost 5-10s
+    at startup (ctranslate2 + tokenizers + numpy), all of which the agent
+    thread imports again later anyway. `find_spec` just looks up the module
+    on sys.path and returns metadata — microseconds.
+    """
     try:
-        __import__(module_name)
-        return True
-    except Exception:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
         return False
 
 
 def _print_diagnostics(errors: list[str], warnings: list[str]) -> None:
-    print("[preflight] Running startup checks...")
     if not errors and not warnings:
-        print("[preflight] All checks passed.")
+        print("[preflight] all checks passed.", flush=True)
         return
 
     for warning in warnings:
-        print(f"[preflight][warn] {warning}")
+        print(f"[preflight][warn] {warning}", flush=True)
     for error in errors:
-        print(f"[preflight][error] {error}")
+        print(f"[preflight][error] {error}", flush=True)

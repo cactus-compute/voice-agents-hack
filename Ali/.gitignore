@@ -16,3 +16,16 @@ node_modules/
 package-lock.json.bak
 executors/browser/agent/server/dist/
 executors/browser/agent/dist/
+
+# Laptop-wide disk index (built locally, never committed)
+# Default location is ~/.cache/ali/ which is outside the repo, but protect
+# against relative ALI_INDEX_DIR overrides too.
+.cache/
+ali-index/
+index.db
+index.db-wal
+index.db-shm
+vectors.bin
+vectors_meta.json
+profile.json
+manifest.json

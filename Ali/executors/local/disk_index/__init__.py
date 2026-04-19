@@ -31,6 +31,8 @@ __all__ = [
     "answer_question",
     "get_user_profile",
     "index_exists",
+    "index_is_complete",
+    "index_needs_resume",
     "index_stats",
     "reset_handle",
     "retrieve_context",
@@ -83,6 +85,52 @@ def index_exists() -> bool:
         return stats.files > 0
     finally:
         conn.close()
+
+
+def index_is_complete() -> bool:
+    """Return True when the on-disk index reflects a fully-finished build.
+
+    We treat a build as "complete" when:
+      * `manifest.built_at` is set (only written at the end of `run_build`),
+      * every chunk has an embedding (when embeddings are enabled),
+      * `vectors.bin` + `vectors_meta.json` exist (when embeddings are enabled),
+      * `profile.json` exists.
+    Any missing piece means a previous build was interrupted; the caller
+    should resume rather than skip.
+    """
+    from config.settings import INDEX_ENABLE_EMBEDDINGS
+
+    index_dir = _index_dir()
+    db_path = index_dir / "index.db"
+    if not db_path.exists():
+        return False
+    try:
+        conn = _store.connect(db_path, create=False)
+    except Exception:
+        return False
+    try:
+        stats = _store.stats(conn)
+        if stats.built_at is None or stats.files <= 0:
+            return False
+        if INDEX_ENABLE_EMBEDDINGS:
+            missing = _store.count_chunks_needing_embedding(conn)
+            if missing > 0:
+                return False
+            if not (index_dir / "vectors.bin").exists():
+                return False
+            if not (index_dir / "vectors_meta.json").exists():
+                return False
+    finally:
+        conn.close()
+    if not (index_dir / "profile.json").exists():
+        return False
+    return True
+
+
+def index_needs_resume() -> bool:
+    """True when there's a partial index on disk that a future `run_build`
+    would pick up incrementally."""
+    return index_exists() and not index_is_complete()
 
 
 def index_stats() -> IndexStats | None:

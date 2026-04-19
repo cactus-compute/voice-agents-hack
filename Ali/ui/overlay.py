@@ -5,6 +5,7 @@ Liquid glass overlay — Apple-style frosted pill, top-center, expands downward.
 from __future__ import annotations
 
 import datetime
+import os
 import queue
 import subprocess
 import sys
@@ -65,7 +66,19 @@ class _CamBridge(QObject):
     frame_ready = Signal(QImage)
     greeted     = Signal()
 
+
+class _MacGlobalHotkeyBridge(QObject):
+    """Marshals AppKit global key events to the Qt main thread."""
+
+    backtick = Signal()
+    right_option_down = Signal()
+    right_option_up = Signal()
+
 # ── Colors ────────────────────────────────────────────────────────────────────
+CITATION_ROW_H = 26
+CITATION_CHIP_PAD_X = 10
+CITATION_CHIP_GAP = 8
+
 FG          = QColor(246, 246, 250)       # primary text on liquid glass
 DIM         = QColor(196, 194, 202)       # secondary text
 RED         = QColor("#E8342E")
@@ -161,6 +174,112 @@ def _apply_macos_overlay(win: QWidget) -> None:
         print(f"[overlay] vibrancy skipped: {e}")
 
 
+def _open_citation_target(path: str) -> None:
+    """Open a cited source when the user clicks its chip.
+
+    * Filesystem paths open with macOS `open <path>` (uses the file's
+      default app).
+    * `ali://contacts/…` / `ali://calendar/…` / `ali://messages/…` open
+      the matching macOS app. We can't easily deep-link to a specific
+      contact or event through `open`, so we settle for opening the app
+      itself — good enough as a jumping-off point.
+    """
+    if not path:
+        return
+    try:
+        if path.startswith("ali://"):
+            rest = path[len("ali://") :]
+            source = rest.split("/", 1)[0]
+            app_name = {
+                "contacts": "Contacts",
+                "calendar": "Calendar",
+                "messages": "Messages",
+            }.get(source)
+            if app_name:
+                subprocess.Popen(
+                    ["open", "-a", app_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            return
+        subprocess.Popen(
+            ["open", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _dlog(
+            "overlay:open_citation",
+            "opened cited file",
+            {"path": path},
+            "H2",
+        )
+    except Exception as exc:
+        _dlog(
+            "overlay:open_citation:error",
+            "failed to open cited target",
+            {"path": path, "err": str(exc)[:200]},
+            "H2",
+        )
+
+
+def _paint_citation_chips(
+    p: "QPainter",
+    *,
+    citations: list[dict],
+    font: "QFont",
+    pad_left: int,
+    y: int,
+    max_width: int,
+) -> list[tuple["QRect", str]]:
+    """Draw citation chips in a single row and return their hit rects.
+
+    Each chip renders as an underlined blue label so it reads as a link.
+    Returns a list of ``(chip_rect, path)`` pairs — mousePressEvent uses
+    this to route clicks to the correct file.
+    """
+    p.save()
+    p.setFont(font)
+    fm = p.fontMetrics()
+    hit_rects: list[tuple[QRect, str]] = []
+    x = pad_left
+    chip_h = 20
+    chip_y = y + (CITATION_ROW_H - chip_h) // 2
+    right_edge = pad_left + max_width
+    for entry in citations:
+        label = str(entry.get("label") or "").strip() or "(unnamed)"
+        path = str(entry.get("path") or "")
+        text_w = fm.horizontalAdvance(label)
+        chip_w = text_w + CITATION_CHIP_PAD_X * 2
+        if x + chip_w > right_edge and hit_rects:
+            # No room for another chip on this row — stop (overflow).
+            break
+        chip_rect = QRect(x, chip_y, chip_w, chip_h)
+        # Subtle pill background so the chip reads as tappable.
+        bg = QColor(100, 210, 255, 34)
+        border = QColor(100, 210, 255, 110)
+        path_rect = QPainterPath()
+        path_rect.addRoundedRect(chip_rect, chip_h / 2, chip_h / 2)
+        p.fillPath(path_rect, bg)
+        p.setPen(QPen(border, 1))
+        p.drawPath(path_rect)
+        # Label (underlined so it's recognisably a link even at a glance).
+        link_font = QFont(font)
+        link_font.setUnderline(True)
+        p.setFont(link_font)
+        p.setPen(BLUE if path else DIM)
+        p.drawText(
+            chip_rect,
+            int(Qt.AlignmentFlag.AlignCenter),
+            label,
+        )
+        p.setFont(font)
+        if path:
+            hit_rects.append((chip_rect, path))
+        x += chip_w + CITATION_CHIP_GAP
+    p.restore()
+    return hit_rects
+
+
 def _update_vibrancy_mask(win: QWidget) -> None:
     try:
         from Quartz import CGRectMake, CGPathCreateWithRoundedRect  # type: ignore[reportMissingImports]
@@ -198,6 +317,11 @@ class TranscriptionOverlay(QWidget):
         self._app = app
         self._q: queue.Queue[tuple[str, str]] = queue.Queue()
         self._history: list[tuple[str, QColor, str]] = []
+        # Clickable citation chips + their on-screen hit rectangles.
+        # Populated when a `cited_paths` state is pushed; consulted by
+        # mousePressEvent to open the underlying file when clicked.
+        self._citations: list[dict] = []
+        self._citation_hit_rects: list[tuple[QRect, str]] = []
         self._drag_offset: QPoint | None = None
         self._pulse_on = True
         self._recording = False
@@ -262,6 +386,18 @@ class TranscriptionOverlay(QWidget):
 
         self._wake_listen_signal.connect(self._on_wake_sequence)
 
+        self._mac_hotkey_bridge = _MacGlobalHotkeyBridge(self)
+        self._mac_hotkey_bridge.backtick.connect(self._on_global_backtick)
+        self._mac_hotkey_bridge.right_option_down.connect(self._on_global_right_option_down)
+        self._mac_hotkey_bridge.right_option_up.connect(self._on_global_right_option_up)
+        self._macos_global_hotkey_monitor = None
+        if (
+            sys.platform == "darwin"
+            and os.environ.get("ALI_ENABLE_HOTKEY") != "1"
+            and os.environ.get("ALI_DISABLE_GLOBAL_HOTKEYS") != "1"
+        ):
+            self._install_macos_global_hotkeys()
+
     # ── Public ───────────────────────────────────────────────────────────────
 
     def push(self, state: str, text: str = "") -> None:
@@ -325,18 +461,104 @@ class TranscriptionOverlay(QWidget):
         if fn is not None:
             fn()
 
+    def _install_macos_global_hotkeys(self) -> None:
+        """
+        Deliver `` ` `` and Right Option without pynput: on macOS, CGEventTap +
+        Qt can SIGTRAP, so we use NSEvent.addGlobalMonitorForEventsMatchingMask.
+        Requires Accessibility for the host app (Terminal, Cursor, etc.).
+        """
+        try:
+            import AppKit
+            from AppKit import NSEvent
+        except ImportError:
+            print("[overlay] AppKit unavailable — global hotkeys skipped", flush=True)
+            return
+
+        emitter = self._mac_hotkey_bridge
+        # US/ANSI grave / backtick (kVK_ANSI_Grave); Right Option (kVK_RightOption)
+        grave_code = 50
+        right_option_code = 61
+
+        def handler(event) -> None:  # type: ignore[no-untyped-def]
+            try:
+                et = event.type()
+                kc = int(event.keyCode())
+                if kc == grave_code and et == AppKit.NSEventTypeKeyDown:
+                    if event.isARepeat():
+                        return
+                    emitter.backtick.emit()
+                    return
+                if kc == right_option_code:
+                    if et == AppKit.NSEventTypeKeyDown:
+                        emitter.right_option_down.emit()
+                    elif et == AppKit.NSEventTypeKeyUp:
+                        emitter.right_option_up.emit()
+            except Exception:
+                pass
+
+        mask = (1 << AppKit.NSEventTypeKeyDown) | (1 << AppKit.NSEventTypeKeyUp)
+        monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, handler)
+        if monitor is None:
+            print(
+                "[overlay][warn] Global ` and Right Option inactive — grant "
+                "Accessibility to this app in System Settings → Privacy & Security "
+                "(or set ALI_ENABLE_HOTKEY=1 to use pynput; may crash with Qt).",
+                flush=True,
+            )
+        else:
+            self._macos_global_hotkey_monitor = monitor
+            print(
+                "[overlay] Global hotkeys: ` and Right Option (needs Accessibility)",
+                flush=True,
+            )
+
+    @Slot()
+    def _on_global_backtick(self) -> None:
+        from voice.capture import invoke_backtick_callback
+
+        invoke_backtick_callback()
+
+    @Slot()
+    def _on_global_right_option_down(self) -> None:
+        from voice.capture import invoke_right_option_down
+
+        invoke_right_option_down()
+
+    @Slot()
+    def _on_global_right_option_up(self) -> None:
+        from voice.capture import invoke_right_option_up
+
+        invoke_right_option_up()
+
     # ── Input ────────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, e) -> None:  # type: ignore[override]
         if e.button() == Qt.MouseButton.LeftButton:
-            if self._hit_close(e.position().x(), e.position().y()):
+            x = e.position().x()
+            y = e.position().y()
+            if self._hit_close(x, y):
                 self._do_hide()
-            else:
-                self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                return
+            # Citation chip clicks open the underlying file / app.
+            for rect, path in self._citation_hit_rects:
+                if rect.contains(int(x), int(y)):
+                    _open_citation_target(path)
+                    return
+            self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent_cursor_hint(self, x: float, y: float) -> None:
+        """Visual affordance: change cursor to pointing hand over citations."""
+        for rect, _ in self._citation_hit_rects:
+            if rect.contains(int(x), int(y)):
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                return
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mouseMoveEvent(self, e) -> None:  # type: ignore[override]
         if self._drag_offset and (e.buttons() & Qt.MouseButton.LeftButton):
             self.move(e.globalPosition().toPoint() - self._drag_offset)
+        else:
+            self.mouseMoveEvent_cursor_hint(e.position().x(), e.position().y())
 
     def mouseReleaseEvent(self, e) -> None:  # type: ignore[override]
         if e.button() == Qt.MouseButton.LeftButton:
@@ -564,8 +786,11 @@ class TranscriptionOverlay(QWidget):
         if state == "transcribing":
             pass  # no-op — don't show "Transcribing…" in history
         elif state == "transcript":
-            # New command: reset history and dock back to top-center
+            # New command: reset history and dock back to top-center.
+            # Also clear any lingering citations from the previous turn.
             self._history.clear()
+            self._citations = []
+            self._citation_hit_rects = []
             self._dock_mode = DOCK_TOP
             self._history.append((text, FG, "user"))
         elif state == "intent":
@@ -585,6 +810,25 @@ class TranscriptionOverlay(QWidget):
         elif state == "assistant":
             self._history.append((text, FG, "assistant"))
             # No autohide — stay visible until next command or × dismiss
+        elif state == "cited_paths":
+            # text is a JSON-encoded list of {label, path} dicts. Store them
+            # so paintEvent can render clickable chips.
+            import json as _json
+            try:
+                items = _json.loads(text or "[]")
+            except _json.JSONDecodeError:
+                items = []
+            self._citations = [
+                {"label": str(i.get("label", "")), "path": str(i.get("path", ""))}
+                for i in items
+                if isinstance(i, dict) and i.get("path")
+            ]
+            self._citation_hit_rects = []
+        elif state == "cited":
+            # Legacy text-only citation — treat as a single chip without
+            # a path (not clickable, kept for backward compatibility).
+            self._citations = [{"label": text, "path": ""}]
+            self._citation_hit_rects = []
         else:
             self._history.append((text, FG, "assistant"))
 
@@ -606,6 +850,9 @@ class TranscriptionOverlay(QWidget):
             else:
                 lines = max(1, (len(text) + 46) // 47)
                 h += lines * LINE_H + 6
+        if self._citations:
+            # Citation chips render in one horizontal row under the body.
+            h += CITATION_ROW_H + 6
         h += PAD_BOT
         return min(MAX_H, max(H_PILL, h))
 
@@ -946,6 +1193,22 @@ class TranscriptionOverlay(QWidget):
                 _flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignLeft)
                 p.drawText(QRect(pad, y, w - pad * 2, th), _flags, text)
                 y += th + 6
+
+        # Clickable citation chips — painted as pill-shaped links after the
+        # main body; each chip's on-screen rect is stashed for hit-testing
+        # in mousePressEvent.
+        if self._citations:
+            self._citation_hit_rects = _paint_citation_chips(
+                p,
+                citations=self._citations,
+                font=self._font_small,
+                pad_left=pad,
+                y=y,
+                max_width=w - pad * 2,
+            )
+            y += CITATION_ROW_H + 6
+        else:
+            self._citation_hit_rects = []
 
     # ── Timers ────────────────────────────────────────────────────────────────
 
