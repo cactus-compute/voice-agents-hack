@@ -1,33 +1,41 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
-  LayoutDashboard,
-  MessageSquare,
-  Activity,
-  FileText,
-  ClipboardList,
-  KeyRound,
-  Key,
-  Settings,
-  Shield,
+  LayoutDashboard, MessageSquare, Activity, FileText,
+  ClipboardList, KeyRound, Key, Settings, Shield, LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
 
 const NAV = [
-  { href: "/overview",      label: "Overview",            icon: LayoutDashboard },
-  { href: "/copilot",       label: "Compliance Copilot",  icon: MessageSquare },
-  { href: "/sessions",      label: "Sessions",            icon: Activity },
-  { href: "/policies",      label: "Policies",            icon: FileText },
-  { href: "/audit-reports", label: "Audit Reports",       icon: ClipboardList },
-  { href: "/kms",           label: "Managed KMS",         icon: KeyRound },
-  { href: "/api-keys",      label: "API Keys",            icon: Key },
-  { href: "/settings",      label: "Settings",            icon: Settings },
+  { href: "/overview",      label: "Overview",           icon: LayoutDashboard },
+  { href: "/copilot",       label: "Compliance Copilot", icon: MessageSquare },
+  { href: "/sessions",      label: "Sessions",           icon: Activity },
+  { href: "/policies",      label: "Policies",           icon: FileText },
+  { href: "/audit-reports", label: "Audit Reports",      icon: ClipboardList },
+  { href: "/kms",           label: "Managed KMS",        icon: KeyRound },
+  { href: "/api-keys",      label: "API Keys",           icon: Key },
+  { href: "/settings",      label: "Settings",           icon: Settings },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  orgName: string;
+  orgSlug: string;
+  userEmail: string | null;
+}
+
+export function Sidebar({ orgName, orgSlug, userEmail }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = createClient();
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
 
   return (
     <aside className="flex flex-col w-[220px] shrink-0 border-r border-[#e5e7eb] bg-[#fafafa] h-screen sticky top-0">
@@ -62,11 +70,21 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Workspace */}
+      {/* Workspace + sign out */}
       <div className="px-4 py-4 border-t border-[#e5e7eb]">
         <div className="text-[11px] text-[#9ca3af] uppercase tracking-wider mb-1">Workspace</div>
-        <div className="text-[13px] font-medium text-[#0d0f12]">Acme Health</div>
-        <div className="text-[11px] text-[#9ca3af]">acme.masker.io</div>
+        <div className="text-[13px] font-semibold text-[#0d0f12] truncate">{orgName}</div>
+        <div className="text-[11px] text-[#9ca3af] truncate mb-3">{orgSlug}.masker.io</div>
+        {userEmail && (
+          <div className="text-[11px] text-[#9ca3af] truncate mb-3">{userEmail}</div>
+        )}
+        <button
+          onClick={signOut}
+          className="flex items-center gap-1.5 text-[12px] text-[#9ca3af] hover:text-red-600 transition-colors"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          Sign out
+        </button>
       </div>
     </aside>
   );

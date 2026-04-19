@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { KMS_KEYS } from "@/lib/mock-data";
-import type { KmsKey } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/server";
+import type { KmsKey } from "@/lib/supabase/types";
 
-const store: KmsKey[] = [...KMS_KEYS];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const q = (client: ReturnType<typeof createClient>, table: string) => (client as any).from(table);
 
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const idx = store.findIndex((k) => k.id === params.id);
-  if (idx === -1) {
-    return NextResponse.json({ error: "Key not found" }, { status: 404 });
-  }
-  const body = (await req.json()) as Partial<KmsKey>;
-  store[idx] = { ...store[idx], ...body };
-  return NextResponse.json(store[idx]);
+export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const body = await req.json() as Partial<KmsKey>;
+  const { data, error } = await q(supabase, "kms_keys").update(body).eq("id", params.id).select().single();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json(data as KmsKey);
 }
