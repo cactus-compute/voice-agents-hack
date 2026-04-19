@@ -1,97 +1,115 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# CrisisIntake
 
-# Getting Started
+Voice-driven housing intake app. Field workers have a natural conversation with displaced individuals; the app extracts structured data on-device via Gemma 4 on Cactus.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Prerequisites
 
-## Step 1: Start Metro
+Before cloning, make sure you have these installed:
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+1. **Node.js >= 22** — check with `node -v`
+   - Install via [nvm](https://github.com/nvm-sh/nvm): `nvm install 22 && nvm use 22`
+   - Or download from [nodejs.org](https://nodejs.org/)
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+2. **Ruby >= 2.6.10** — check with `ruby -v`
+   - macOS ships with Ruby, but if yours is too old: `brew install ruby`
+
+3. **Xcode** (full app, not just Command Line Tools)
+   - Install from the Mac App Store
+   - After install, set the developer directory:
+     ```sh
+     sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+     ```
+   - Open Xcode once and accept the license agreement
+   - Install an iOS Simulator: Xcode > Settings > Platforms > iOS
+
+4. **Watchman** (optional but recommended for Fast Refresh)
+   ```sh
+   brew install watchman
+   ```
+
+## Setup (run these in order)
 
 ```sh
-# Using npm
+# 1. Clone the repo and cd into the app
+git clone <repo-url>
+cd voice-agents-hack/CrisisIntake
+
+# 2. Install JS dependencies
+npm install
+
+# 3. Install Ruby bundler (if you don't have it)
+gem install bundler
+
+# 4. Install CocoaPods via bundler
+bundle install
+
+# 5. Install iOS native pods
+cd ios && bundle exec pod install && cd ..
+
+# 6. Start Metro bundler (keep this terminal open)
 npm start
 
-# OR using Yarn
-yarn start
+# 7. In a NEW terminal, build and run on iOS simulator
+npx react-native run-ios
 ```
 
-## Step 2: Build and run your app
+If `run-ios` can't find a simulator, list available ones and pick one:
+```sh
+xcrun simctl list devices available | grep iPhone
+npx react-native run-ios --simulator="iPhone 16"
+```
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+## Troubleshooting
 
-### Android
+**`xcode-select: error: tool 'xcodebuild' requires Xcode`**
+You have Command Line Tools but not full Xcode. Install Xcode from the App Store, then run:
+```sh
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+```
+
+**`RNGestureHandlerModule could not be found`**
+Native pods aren't linked. Re-run:
+```sh
+cd ios && bundle exec pod install && cd ..
+```
+Then rebuild: `npx react-native run-ios`
+
+**`No simulator available with name "iPhone 15 Pro"`**
+Your Xcode has different simulators. Run `xcrun simctl list devices available | grep iPhone` and use an available name.
+
+**`bundle install` fails with permission errors**
+Try: `sudo gem install bundler` then `bundle install` again.
+
+**Metro bundler port in use**
+Kill the old process: `lsof -ti:8081 | xargs kill -9` then `npm start` again.
+
+## Project Structure
+
+```
+src/
+├── types/          # Shared TypeScript types (intake, transcript, cloud, sanitized)
+├── store/          # Zustand store (useAppStore.ts)
+├── theme/          # Design tokens (colors, spacing, typography)
+├── utils/          # Utility functions (createEmptyIntake, mergeFields)
+├── screens/        # Screen components (IntakeSession, DocumentScan, ResourcePlan)
+├── components/
+│   ├── audio/      # Agent 1 — Audio pipeline components
+│   ├── form/       # Agent 3 — Intake form components
+│   ├── scanner/    # Agent 4 — Document scanner components
+│   └── cloud/      # Agent 5 — Cloud/resource plan components
+├── services/       # Agent 2 & 5 — Extraction, sanitization, Gemini
+└── hooks/          # Agent 1 — useAudioPipeline
+```
+
+## Agent Development
+
+Each agent works on a separate branch from `skeleton-complete`:
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+git checkout skeleton-complete
+git checkout -b agent-N/your-section
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+See `AGENTS.md` for your file ownership and interface contracts.
+See `CLAUDE.md` for project-wide coding standards.
+See `docs/plans/2026-04-18-crisis-intake-implementation.md` for your task list.
