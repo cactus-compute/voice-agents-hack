@@ -7,9 +7,11 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import subprocess
+import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import websockets  # pyright: ignore[reportMissingImports]
 
@@ -38,6 +40,25 @@ class TranscriptionOverlay:
 
     def push(self, state: str, text: str = "") -> None:
         self._q.put((state, text))
+
+    def schedule_wake_prompt(self, start_capture: Callable[[], None]) -> None:
+        """Match Qt overlay: armed state → spoken 'Hi' → then start capture (bg thread)."""
+        self.push("prompt_ready", "")
+
+        def _seq() -> None:
+            if sys.platform == "darwin":
+                try:
+                    subprocess.Popen(
+                        ["/usr/bin/say", "-r", "210", "Hi"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.78)
+            start_capture()
+
+        threading.Thread(target=_seq, daemon=True).start()
 
     def run_forever(self) -> None:
         """

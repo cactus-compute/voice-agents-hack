@@ -15,6 +15,7 @@ class KnownGoal(str, Enum):
     ADD_CALENDAR_EVENT = "add_calendar_event"
     OPEN_URL = "open_url"
     FIND_FILE = "find_file"
+    CAPTURE_MEETING = "capture_meeting"
     UNKNOWN = "unknown"
 
 

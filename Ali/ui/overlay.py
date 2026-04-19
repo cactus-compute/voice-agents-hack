@@ -6,26 +6,52 @@ from __future__ import annotations
 
 import datetime
 import queue
+import subprocess
+import sys
 import threading
+from typing import Callable
 
-import cv2  # type: ignore[reportMissingImports]
-
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal, QObject  # pyright: ignore[reportMissingImports]
+from PySide6.QtCore import QPoint, QRect, Qt, QObject, QTimer, Signal, Slot  # pyright: ignore[reportMissingImports]
 from PySide6.QtGui import (  # pyright: ignore[reportMissingImports]
-    QBrush, QColor, QFont, QGuiApplication, QImage, QLinearGradient,
+    QBrush, QColor, QCursor, QFont, QGuiApplication, QImage, QLinearGradient,
     QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QApplication, QWidget  # pyright: ignore[reportMissingImports]
 
-_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+# #region agent log
+def _dlog(loc: str, msg: str, data: dict, hid: str = "H2") -> None:
+    try:
+        import json as _j, os as _o, time as _t
+        _p = "/Users/alspenceramitojr/Desktop/Ali/.cursor/debug-4ea166.log"
+        _o.makedirs(_o.path.dirname(_p), exist_ok=True)
+        with open(_p, "a") as _f:
+            _f.write(_j.dumps({"sessionId":"4ea166","hypothesisId":hid,"location":loc,
+                               "message":msg,"data":data,"timestamp":int(_t.time()*1000)})+"\n")
+            _f.flush()
+    except Exception:
+        pass
+# #endregion
 
-W_WAKE  = 560
-H_WAKE  = 200
-CAM_W   = 160
-CAM_H   = 160
+# NOTE: `cv2` is deliberately NOT imported at module load time.
+# `faster-whisper` pulls in PyAV, which bundles its own `libavdevice.dylib`
+# registering `AVFFrameReceiver` / `AVFAudioReceiver`. `cv2` bundles the same
+# classes. Having both loaded in the same process causes macOS to SIGTRAP
+# ("zsh: trace trap") on the next AVFoundation call (even indirect ones from
+# PyAudio/CoreAudio). Import cv2 lazily, only when the wake-scene actually
+# opens the webcam.
+
+W_WAKE    = 560
+H_WAKE    = 200
+CAM_W     = 160
+CAM_H     = 160
 USER_NAME = "Alspencer"
+
+# ── Meeting mode geometry ─────────────────────────────────────────────────────
+W_MEETING       = 560
+H_MEETING_BASE  = 200    # height before any action items
+H_ACTION_ROW    = 34     # height per action item row
+MAX_ACTIONS_SHOWN = 5
+MAX_TRANSCRIPT_CHARS = 320    # chars of rolling transcript shown
 
 
 def _time_greeting() -> str:
@@ -56,7 +82,7 @@ R       = 29      # large radius → pill shape
 MARGIN  = 8       # gap from top (below menu bar)
 MARGIN_RIGHT = 16 # gap from right edge when docked-right
 MAX_H   = 540
-MAX_HIST = 6
+MAX_HIST = 8
 
 # ── Docking ───────────────────────────────────────────────────────────────────
 DOCK_TOP    = "top"
@@ -92,8 +118,9 @@ def _apply_macos_overlay(win: QWidget) -> None:
             # including Finder + Mail, so our overlay stays on top regardless
             # of which app is active.
             ns_win.setLevel_(101)
-            # 1=CanJoinAllSpaces 16=Stationary 256=FullScreenAuxiliary
-            ns_win.setCollectionBehavior_(1 | 16 | 256)
+            # 1=CanJoinAllSpaces  8=Transient (no Mission Control card)
+            # 64=IgnoresCycle (no Cmd+Tab entry)  256=FullScreenAuxiliary
+            ns_win.setCollectionBehavior_(1 | 8 | 64 | 256)
             # Keep the overlay visible when our Python app deactivates
             # (Finder / Mail take focus). Without this, Qt.Tool windows
             # auto-hide on deactivation and the user has to click the Dock
@@ -105,18 +132,29 @@ def _apply_macos_overlay(win: QWidget) -> None:
             ns_win.setOpaque_(False)
             ns_win.setBackgroundColor_(NSColor.clearColor())
 
-            content = ns_win.contentView()
-            effect = NSVisualEffectView.alloc().initWithFrame_(content.bounds())
-            effect.setMaterial_(21)      # UnderWindowBackground — most transparent
-            effect.setBlendingMode_(0)   # BehindWindow
-            effect.setState_(1)          # Active
-            effect.setAutoresizingMask_(18)
-            # No forced appearance — inherit system so blur stays subtle
-            content.addSubview_positioned_relativeTo_(effect, 0, None)
-            win._ns_window = ns_win  # type: ignore[attr-defined]
-            win._ns_effect = effect  # type: ignore[attr-defined]
-            win._vibrancy_active = True  # type: ignore[attr-defined]
-            print("[overlay] liquid glass vibrancy active")
+            qt_view = ns_win.contentView()  # QNSView — Qt renders here
+            # Add the blur view BEHIND Qt's content view (as sibling in frame view)
+            # so Qt text renders on top of the vibrancy, not underneath it.
+            try:
+                frame_view = qt_view.superview()  # NSThemeFrame (window frame)
+                if frame_view is None:
+                    raise ValueError("no frame_view")
+                effect = NSVisualEffectView.alloc().initWithFrame_(qt_view.frame())
+                effect.setMaterial_(21)      # UnderWindowBackground — subtle
+                effect.setBlendingMode_(0)   # BehindWindow
+                effect.setState_(1)          # Active
+                effect.setAutoresizingMask_(18)
+                # Insert behind Qt's view so Qt text is always on top
+                frame_view.addSubview_positioned_relativeTo_(effect, -1, qt_view)
+                win._ns_window = ns_win  # type: ignore[attr-defined]
+                win._ns_effect = effect  # type: ignore[attr-defined]
+                win._vibrancy_active = True  # type: ignore[attr-defined]
+                print("[overlay] liquid glass vibrancy active")
+            except Exception as ve:
+                # Vibrancy positioning failed — fall back to Qt-painted glass
+                win._ns_window = ns_win  # type: ignore[attr-defined]
+                win._vibrancy_active = False  # type: ignore[attr-defined]
+                print(f"[overlay] vibrancy positioning skipped ({ve}) — using solid glass")
 
         win.setWindowTitle("")
     except Exception as e:
@@ -131,8 +169,16 @@ def _update_vibrancy_mask(win: QWidget) -> None:
         if effect is None:
             return
         w, h = win.width(), win.height()
+        # Effect view lives in frame_view coords — keep its frame synced with
+        # the Qt contentView's frame (they should be identical for frameless windows).
+        try:
+            ns_win = getattr(win, "_ns_window", None)
+            if ns_win is not None:
+                qt_frame = ns_win.contentView().frame()
+                effect.setFrame_(qt_frame)
+        except Exception:
+            pass
         bounds = CGRectMake(0, 0, w, h)
-        effect.setFrame_(bounds)
         mask = CAShapeLayer.layer()
         path = CGPathCreateWithRoundedRect(bounds, R, R, None)
         mask.setPath_(path)
@@ -143,6 +189,10 @@ def _update_vibrancy_mask(win: QWidget) -> None:
 
 
 class TranscriptionOverlay(QWidget):
+    """Thread-safe: wake word calls schedule_wake_prompt() from a background thread."""
+
+    _wake_listen_signal = Signal()
+
     def __init__(self, app: QApplication) -> None:
         super().__init__()
         self._app = app
@@ -151,15 +201,24 @@ class TranscriptionOverlay(QWidget):
         self._drag_offset: QPoint | None = None
         self._pulse_on = True
         self._recording = False
+        self._prompt_armed = False
+        self._pill_label = "Listening..."
+        self._wake_capture_fn: Callable[[], None] | None = None
         # wake / call state
-        self._wake_mode   = False
+        self._wake_mode    = False
         self._wake_greeted = False
-        self._wake_text   = ""
-        self._cam_pixmap  = QPixmap()
-        self._cam_bridge  = _CamBridge()
-        self._cam_running = False
+        self._wake_text    = ""
+        self._cam_pixmap   = QPixmap()
+        self._cam_bridge   = _CamBridge()
+        self._cam_running  = False
         self._cam_bridge.frame_ready.connect(self._on_cam_frame)
         self._cam_bridge.greeted.connect(self._on_wake_greeted)
+
+        # meeting capture state
+        self._meeting_mode: bool = False
+        self._meeting_transcript: str = ""   # rolling committed words (trimmed)
+        self._meeting_interim: str = ""      # current partial phrase
+        self._meeting_actions: list[tuple[str, str]] = []  # (task, status)
 
         self._dock_mode: str = DOCK_TOP
 
@@ -182,6 +241,10 @@ class TranscriptionOverlay(QWidget):
         self.setMouseTracking(True)
         self.resize(W_PILL, H_PILL)
         self._reposition(W_PILL, H_PILL)
+        # Show briefly so NSApp registers the NSWindow in its windows() list,
+        # then immediately hide. _apply_macos_overlay searches that list.
+        self.show()
+        QApplication.processEvents()
         self.hide()
         _apply_macos_overlay(self)
         _update_vibrancy_mask(self)
@@ -197,10 +260,70 @@ class TranscriptionOverlay(QWidget):
         self._autohide_timer.setSingleShot(True)
         self._autohide_timer.timeout.connect(self.hide)
 
+        self._wake_listen_signal.connect(self._on_wake_sequence)
+
     # ── Public ───────────────────────────────────────────────────────────────
 
     def push(self, state: str, text: str = "") -> None:
         self._q.put((state, text))
+
+    def schedule_wake_prompt(self, start_capture: Callable[[], None]) -> None:
+        """
+        Conversational wake: show armed pill + pulse, play a listen chime on macOS,
+        then invoke start_capture() (typically request_ptt_session_from_wake).
+        Safe to call from non-Qt threads.
+        """
+        self._wake_capture_fn = start_capture
+        self._wake_listen_signal.emit()
+
+    @Slot()
+    def _on_wake_sequence(self) -> None:
+        if self._prompt_armed:
+            return  # already armed — ignore duplicate wake trigger
+        self._autohide_timer.stop()
+        self._wake_mode = False
+        self._prompt_armed = True
+        self._recording = False
+        self._pill_label = "Hi — I'm listening…"
+        self._history.clear()
+        self._dock_mode = DOCK_TOP
+        self._pulse_on = True
+        self._set_size(W_PILL, H_PILL)
+        self._present()
+        self._pulse_timer.start(PULSE_MS)
+        self.update()
+        QTimer.singleShot(0, self._play_wake_greeting)
+        # Start capture almost immediately so wake feels instant.
+        QTimer.singleShot(120, self._emit_wake_capture)
+
+    def _play_wake_greeting(self) -> None:
+        if sys.platform != "darwin":
+            return
+        try:
+            from voice.speak import _voice
+            proc = subprocess.Popen(
+                ["/usr/bin/say", "-v", _voice(), "-r", "160", "Hi"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                from voice.speak import track_tts_process
+                track_tts_process(proc)
+            except Exception:
+                pass
+            # #region agent log
+            _dlog("overlay:_play_wake_greeting", "wake greeting launched", {"pid": proc.pid}, "H2")
+            # #endregion
+        except Exception:
+            # #region agent log
+            _dlog("overlay:_play_wake_greeting:error", "wake greeting failed", {}, "H2")
+            # #endregion
+
+    def _emit_wake_capture(self) -> None:
+        fn = self._wake_capture_fn
+        self._wake_capture_fn = None
+        if fn is not None:
+            fn()
 
     # ── Input ────────────────────────────────────────────────────────────────
 
@@ -224,8 +347,8 @@ class TranscriptionOverlay(QWidget):
         _update_vibrancy_mask(self)
 
     def _hit_close(self, x: float, y: float) -> bool:
-        cx, cy = self.width() - 24, 24
-        return (x - cx) ** 2 + (y - cy) ** 2 <= 14 ** 2
+        cx, cy = self.width() - 23, 19
+        return (x - cx) ** 2 + (y - cy) ** 2 <= 16 ** 2
 
     # ── Queue ────────────────────────────────────────────────────────────────
 
@@ -286,6 +409,10 @@ class TranscriptionOverlay(QWidget):
                 subprocess.run(["say", "-v", "Flo (English (US))", "-r", "160", text])
 
         def _loop() -> None:
+            import cv2  # type: ignore[reportMissingImports]
+            cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
             cap = cv2.VideoCapture(0)
             face_first: float | None = None
             greeted = False
@@ -303,7 +430,7 @@ class TranscriptionOverlay(QWidget):
                     break
                 frame = cv2.flip(frame, 1)
                 grey  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = _CASCADE.detectMultiScale(grey, 1.1, 5, minSize=(60, 60))
+                faces = cascade.detectMultiScale(grey, 1.1, 5, minSize=(60, 60))
 
                 if len(faces) > 0 and not greeted and not tts_started:
                     if face_first is None:
@@ -339,6 +466,9 @@ class TranscriptionOverlay(QWidget):
             return
 
         if state == "wake":
+            if self._wake_mode:
+                return  # already in wake mode — ignore duplicate trigger
+            self._cam_running = False  # stop any lingering camera thread
             self._dock_mode = DOCK_TOP
             self._wake_mode = True
             self._wake_greeted = False
@@ -346,50 +476,115 @@ class TranscriptionOverlay(QWidget):
             self._reposition(W_WAKE, H_WAKE)
             self.show()
             self.raise_()
+            self._reassert_window_level()
             self._start_camera()
+            return
+
+        # ── Meeting mode states ──────────────────────────────────────────────
+        if state == "meeting_start":
+            self._meeting_mode       = True
+            self._meeting_transcript = ""
+            self._meeting_interim    = ""
+            self._meeting_actions    = []
+            self._dock_mode          = DOCK_RIGHT
+            self._recording          = False
+            self._prompt_armed       = False
+            h = H_MEETING_BASE
+            self._reposition(W_MEETING, h)
+            self._present()
+            self._pulse_timer.start(PULSE_MS)
+            self.update()
+            return
+
+        if state == "meeting_interim":
+            # Frequent — just update interim text and repaint; don't resize
+            self._meeting_interim = text
+            self.update()
+            return
+
+        if state == "meeting_final":
+            # Committed utterance: append to rolling transcript, clear interim
+            self._meeting_interim = ""
+            combined = (self._meeting_transcript + " " + text).strip()
+            # Keep last MAX_TRANSCRIPT_CHARS visible
+            if len(combined) > MAX_TRANSCRIPT_CHARS:
+                combined = "…" + combined[-MAX_TRANSCRIPT_CHARS:]
+            self._meeting_transcript = combined
+            self.update()
+            return
+
+        if state == "meeting_action":
+            self._meeting_actions.append((text, "Queued"))
+            self._meeting_actions = self._meeting_actions[-MAX_ACTIONS_SHOWN:]
+            n = len(self._meeting_actions)
+            h = H_MEETING_BASE + n * H_ACTION_ROW + 12
+            self._reposition(W_MEETING, h)
+            self.update()
+            return
+
+        if state == "meeting_action_update":
+            # text = "task_description|status"
+            if "|" in text:
+                task, status = text.split("|", 1)
+                for i, (t, _) in enumerate(self._meeting_actions):
+                    if t == task:
+                        self._meeting_actions[i] = (t, status)
+                        break
+            self.update()
+            return
+
+        if state == "meeting_stop":
+            self._meeting_mode       = False
+            self._meeting_transcript = ""
+            self._meeting_interim    = ""
+            self._meeting_actions    = []
+            self._pulse_timer.stop()
+            self._do_hide()
             return
 
         if state == "recording":
             self._dock_mode = DOCK_TOP
             self._history.clear()
+            self._prompt_armed = False
             self._recording = True
+            self._pill_label = "Listening..."
             self._pulse_on = True
             if not self._wake_mode:
                 self._set_size(W_PILL, H_PILL)
             self.show()
             self.raise_()
+            self._reassert_window_level()
             self._pulse_timer.start(PULSE_MS)
             self.update()
             return
 
         self._recording = False
+        self._prompt_armed = False
 
         if state == "transcribing":
-            self._history.append(("Transcribing...", YELLOW, "status"))
+            pass  # no-op — don't show "Transcribing…" in history
         elif state == "transcript":
+            # New command: reset history and dock back to top-center
+            self._history.clear()
+            self._dock_mode = DOCK_TOP
             self._history.append((text, FG, "user"))
         elif state == "intent":
-            self._history.append((text, BLUE, "status"))
+            pass  # skip intent label — action line already conveys this
         elif state == "action":
-            self._history.append((text, GREEN, "assistant"))
-            # Dock to the right while the agent is actively working on a
-            # known intent, so it stays out of the way of whatever app the
-            # agent is driving (Finder, Mail, browser, etc.).
+            self._history.append((text, FG, "assistant"))
             self._dock_mode = DOCK_RIGHT
         elif state == "revealed":
-            label = f"Revealed in Finder: {text}" if text else "Revealed in Finder"
+            label = f"Revealed: {text}" if text else "Revealed in Finder"
             self._history.append((label, GREEN, "assistant"))
             self._dock_mode = DOCK_RIGHT
-            # No autohide — leave visible beside the Finder window until the
-            # user dismisses or triggers a new command. Always-on-top is
-            # handled by the NSStatusWindowLevel set in _apply_macos_overlay
-            # so Finder can come forward normally without fighting us.
         elif state == "done":
             self._history.append(("✓  Done", GREEN, "assistant"))
-            self._autohide_timer.start(AUTOHIDE_MS)
+            # No autohide — stay visible beside the app until next command
         elif state == "error":
-            self._history.append((text or "Error", ERR, "status"))
-            self._autohide_timer.start(AUTOHIDE_MS)
+            self._history.append((text or "Error", ERR, "assistant"))
+        elif state == "assistant":
+            self._history.append((text, FG, "assistant"))
+            # No autohide — stay visible until next command or × dismiss
         else:
             self._history.append((text, FG, "assistant"))
 
@@ -399,23 +594,31 @@ class TranscriptionOverlay(QWidget):
         self.update()
 
     def _calc_height(self) -> int:
-        h = 20
+        PAD_TOP = 18
+        PAD_BOT = 18
+        SEP = 10      # separator under user transcript
+        LINE_H = 26   # height per wrapped line of body text
+        SMALL_H = 22  # height for user transcript line
+        h = PAD_TOP
         for text, _, kind in self._history:
-            lines = max(1, (len(text) + 48) // 49)
-            h += (lines * 22 + 24) if kind != "status" else 40
-        return min(MAX_H, max(H_PILL, h + 20))
+            if kind == "user":
+                h += SMALL_H + SEP
+            else:
+                lines = max(1, (len(text) + 46) // 47)
+                h += lines * LINE_H + 6
+        h += PAD_BOT
+        return min(MAX_H, max(H_PILL, h))
 
     def _set_size(self, w: int, h: int) -> None:
         self._reposition(w, h)
 
     def _reposition(self, w: int, h: int) -> None:
-        screen = QGuiApplication.primaryScreen()
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
             if self._dock_mode == DOCK_RIGHT:
                 x = geo.right() - w - MARGIN_RIGHT
-                y = geo.center().y() - h // 2
-                y = max(geo.top() + MARGIN, min(y, geo.bottom() - h - MARGIN))
+                y = geo.top() + MARGIN   # top-right, same row as pill
             else:
                 x = geo.center().x() - w // 2
                 y = geo.top() + MARGIN
@@ -440,6 +643,12 @@ class TranscriptionOverlay(QWidget):
             self._paint_wake(p, w, h, shell)
             return
 
+        # ── Meeting capture mode ──────────────────────────────────────────────
+        if self._meeting_mode:
+            self._paint_glass_body(p, shell, w, h, vibrancy)
+            self._paint_meeting(p, w, h)
+            return
+
         # ── 1. Soft drop shadow (two offset layers for bloom) ─────────────────
         for offset, alpha in ((4, 14), (2, 8)):
             s = QPainterPath()
@@ -448,9 +657,9 @@ class TranscriptionOverlay(QWidget):
 
         # ── 2. Glass body — translucent liquid tint ────────────────────────────
         if vibrancy:
-            p.fillPath(shell, QColor(255, 255, 255, 18))
+            p.fillPath(shell, QColor(18, 18, 22, 145))  # semi-opaque so text pops over blur
         else:
-            p.fillPath(shell, QColor(34, 38, 48, 118))  # translucent fallback
+            p.fillPath(shell, QColor(34, 38, 48, 200))  # solid fallback
 
         # ── 3. Border — soft glass edge ───────────────────────────────────────
         border = QLinearGradient(0, 0, 0, h)
@@ -470,7 +679,7 @@ class TranscriptionOverlay(QWidget):
         p.drawPath(inner)
 
         # ── 5. Content ────────────────────────────────────────────────────────
-        if self._recording:
+        if self._recording or self._prompt_armed:
             self._paint_pill(p)
         else:
             self._paint_expanded(p)
@@ -494,12 +703,132 @@ class TranscriptionOverlay(QWidget):
         p.drawText(
             QRect(74, cy - 12, w - 90, 24),
             Qt.AlignmentFlag.AlignVCenter,
-            "Listening...",
+            self._pill_label,
         )
 
+    def _paint_glass_body(
+        self, p: QPainter, shell: QPainterPath, w: int, h: int, vibrancy: bool
+    ) -> None:
+        """Shared glass background used by meeting mode (and the normal pill path)."""
+        for offset, alpha in ((4, 14), (2, 8)):
+            s = QPainterPath()
+            s.addRoundedRect(QRect(offset // 2, offset, w - offset, h), R, R)
+            p.fillPath(s, QColor(0, 0, 0, alpha))
+        if vibrancy:
+            p.fillPath(shell, QColor(18, 18, 22, 145))
+        else:
+            p.fillPath(shell, QColor(34, 38, 48, 200))
+        border = QLinearGradient(0, 0, 0, h)
+        border.setColorAt(0.0, QColor(255, 255, 255, 68))
+        border.setColorAt(0.5, QColor(210, 220, 240, 44))
+        border.setColorAt(1.0, QColor(156, 168, 188, 30))
+        p.setPen(QPen(QBrush(border), 1.2))
+        p.drawPath(shell)
+
+    def _paint_meeting(self, p: QPainter, w: int, h: int) -> None:
+        """Meeting capture overlay: live transcript + action items queue."""
+        pad = 14
+
+        # ── Header ────────────────────────────────────────────────────────────
+        dot_col = RED if self._pulse_on else QColor(200, 80, 76, 80)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(dot_col)
+        p.drawEllipse(QPoint(pad + 6, 22), 6, 6)
+
+        p.setPen(FG)
+        p.setFont(self._font_label)
+        p.drawText(QRect(pad + 20, 10, w - 90, 24), Qt.AlignmentFlag.AlignVCenter,
+                   "Meeting Capture")
+
+        p.setPen(DIM)
+        p.setFont(self._font_small)
+        p.drawText(QRect(w - 60, 10, 50, 24), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                   "say stop")
+
+        # Divider
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        p.drawLine(QPoint(pad, 38), QPoint(w - pad, 38))
+
+        # ── Transcript area ───────────────────────────────────────────────────
+        tx_y   = 46
+        tx_h   = 110
+        tx_w   = w - pad * 2
+
+        # Committed transcript (dim)
+        p.setPen(DIM)
+        p.setFont(self._font_small)
+        _flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignBottom)
+        p.drawText(QRect(pad, tx_y, tx_w, tx_h - 22), _flags,
+                   self._meeting_transcript or "Listening to meeting…")
+
+        # Interim text (live, brighter) — pulsing
+        if self._meeting_interim:
+            interim_alpha = 220 if self._pulse_on else 160
+            p.setPen(QColor(246, 246, 250, interim_alpha))
+            p.setFont(self._font_body)
+            p.drawText(QRect(pad, tx_y + tx_h - 26, tx_w, 22),
+                       int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter),
+                       self._meeting_interim)
+        else:
+            # Blinking cursor to signal active listening
+            if self._pulse_on:
+                p.setPen(QColor(100, 210, 255, 180))
+                p.setFont(self._font_body)
+                p.drawText(QRect(pad, tx_y + tx_h - 26, 20, 22),
+                           Qt.AlignmentFlag.AlignLeft, "▌")
+
+        if not self._meeting_actions:
+            return
+
+        # Divider before actions
+        sep_y = tx_y + tx_h + 4
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        p.drawLine(QPoint(pad, sep_y), QPoint(w - pad, sep_y))
+
+        p.setPen(DIM)
+        p.setFont(self._font_small)
+        p.drawText(QRect(pad, sep_y + 4, 120, 18), Qt.AlignmentFlag.AlignLeft, "Action Items")
+
+        # ── Action items ──────────────────────────────────────────────────────
+        STATUS_COLOR = {
+            "Queued":  QColor(196, 194, 202),
+            "Running": BLUE,
+            "done":    GREEN,
+            "error":   ERR,
+        }
+        STATUS_LABEL = {
+            "Queued":  "Queued",
+            "Running": "Running…",
+            "done":    "✓ Done",
+            "error":   "✗ Error",
+        }
+
+        ay = sep_y + 26
+        for task, status in self._meeting_actions:
+            sc    = STATUS_COLOR.get(status, DIM)
+            label = STATUS_LABEL.get(status, status)
+
+            # Subtle row background
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 12))
+            p.drawRoundedRect(pad, ay, w - pad * 2, H_ACTION_ROW - 4, 8, 8)
+
+            p.setPen(FG)
+            p.setFont(self._font_small)
+            p.drawText(QRect(pad + 10, ay + 2, w - 130, H_ACTION_ROW - 6),
+                       int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter),
+                       task)
+
+            p.setPen(sc)
+            p.drawText(QRect(w - 110, ay + 2, 96, H_ACTION_ROW - 6),
+                       int(Qt.AlignmentFlag.AlignRight) | int(Qt.AlignmentFlag.AlignVCenter),
+                       label)
+
+            ay += H_ACTION_ROW
+
     def _paint_wake(self, p: QPainter, w: int, h: int, shell: QPainterPath) -> None:
-        # Glass background
-        p.fillPath(shell, QColor(18, 18, 22, 210))
+        # Low alpha — let desktop vibrancy bleed through the whole panel
+        p.fillPath(shell, QColor(18, 18, 22, 60))
         border = QLinearGradient(0, 0, 0, h)
         border.setColorAt(0, QColor(255, 255, 255, 70))
         border.setColorAt(1, QColor(255, 255, 255, 20))
@@ -559,7 +888,7 @@ class TranscriptionOverlay(QWidget):
             p.setFont(self._font_small)
             p.drawText(
                 QRect(tx, cam_y + 44, tw, CAM_H - 50),
-                Qt.TextFlag.TextWordWrap,
+                int(Qt.TextFlag.TextWordWrap),
                 "While you were asleep I've been busy — I found great opportunities and took care of things.",
             )
 
@@ -576,32 +905,47 @@ class TranscriptionOverlay(QWidget):
         p.drawLine(QPoint(cx - 5, cy + 15), QPoint(cx + 5, cy + 15))
 
     def _paint_expanded(self, p: QPainter) -> None:
-        w = self.width()
+        w, h = self.width(), self.height()
+        pad = 22
 
-        # Close ×
-        p.setPen(DIM)
+        # Subtle × button
+        p.setPen(QColor(180, 178, 195, 100))
         p.setFont(self._font_close)
-        p.drawText(QRect(w - 36, 8, 22, 22), Qt.AlignmentFlag.AlignCenter, "×")
+        p.drawText(QRect(w - 34, 8, 22, 22), Qt.AlignmentFlag.AlignCenter, "×")
 
-        y = 14
+        if not self._history:
+            return
+
+        y = 18
+
         for text, colour, kind in self._history:
-            lines = max(1, (len(text) + 48) // 49)
-            bh = lines * 22 + 20 if kind != "status" else 38
-
-            bx, bw = 12, w - 24
-            bub_alpha = 16 if kind == "user" else 10 if kind == "assistant" else 8
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, bub_alpha))
-            p.drawRoundedRect(bx, y, bw, bh, 12, 12)
-
-            p.setPen(colour)
-            p.setFont(self._font_body if kind != "status" else self._font_small)
-            p.drawText(
-                QRect(bx + 14, y + 8, bw - 24, bh - 12),
-                Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignVCenter,
-                text,
-            )
-            y += bh + 8
+            if kind == "user":
+                # Command: small, muted — one line, italic
+                p.setPen(QColor(168, 165, 180))
+                p.setFont(self._font_small)
+                # Trim quotes, truncate to fit one line
+                display = text.strip('"').strip("'")
+                if len(display) > 58:
+                    display = display[:55] + "…"
+                p.drawText(
+                    QRect(pad, y, w - pad * 2 - 30, 22),
+                    int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter),
+                    display,
+                )
+                y += 22
+                # Hairline separator
+                p.setPen(QPen(QColor(255, 255, 255, 22), 0.8))
+                p.drawLine(QPoint(pad, y + 4), QPoint(w - pad, y + 4))
+                y += 14
+            else:
+                # Response / status — larger, colour-coded
+                lines = max(1, (len(text) + 46) // 47)
+                th = lines * 26
+                p.setPen(colour)
+                p.setFont(self._font_body)
+                _flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.AlignmentFlag.AlignLeft)
+                p.drawText(QRect(pad, y, w - pad * 2, th), _flags, text)
+                y += th + 6
 
     # ── Timers ────────────────────────────────────────────────────────────────
 
@@ -614,6 +958,8 @@ class TranscriptionOverlay(QWidget):
         self._pulse_timer.stop()
         self._autohide_timer.stop()
         self._recording = False
+        self._prompt_armed = False
+        self._wake_capture_fn = None
         self.hide()
 
     def _present(self) -> None:
@@ -621,6 +967,7 @@ class TranscriptionOverlay(QWidget):
         Show overlay above the current app/space without activating a new space.
         """
         self.show()
+        self.raise_()
         self._reassert_window_level()
 
     def _reassert_window_level(self) -> None:
@@ -633,7 +980,7 @@ class TranscriptionOverlay(QWidget):
             if ns_win is None:
                 return
             ns_win.setLevel_(101)  # NSPopUpMenuWindowLevel
-            ns_win.setCollectionBehavior_(1 | 16 | 256)
+            ns_win.setCollectionBehavior_(1 | 8 | 64 | 256)
             try:
                 ns_win.setHidesOnDeactivate_(False)
             except Exception:
@@ -641,3 +988,6 @@ class TranscriptionOverlay(QWidget):
             ns_win.orderFrontRegardless()
         except Exception:
             pass
+
+    def closeEvent(self, _event) -> None:  # type: ignore[override]
+        self._cam_running = False  # signal camera thread to stop before Qt tears down

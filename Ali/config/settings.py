@@ -1,6 +1,6 @@
 """
 Global configuration.
-API keys are loaded from .env in the project root (never commit that file).
+API keys are loaded from .env in the project root (never commit that file --- Alspencer --- I know claude--- don't leak your source code next time).
 """
 
 import os
@@ -15,6 +15,9 @@ except ImportError:
 
 # ── Gemini API (for fast text intent parsing) ─────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# ── Deepgram API (real-time streaming STT for meeting capture) ────────────────
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
 # ── Cactus Cloud API ──────────────────────────────────────────────────────────
 CACTUS_API_KEY = os.environ.get("CACTUS_API_KEY", "")

@@ -7,6 +7,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+# --- Alspencer --- importing a lot of hardcoded shit here.
 from config.resources import KNOWN_CONTACTS
 from config.settings import VISION_ARTIFACT_DIR
 

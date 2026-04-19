@@ -17,9 +17,31 @@ import json
 import os
 import re
 import shutil
+from urllib.parse import quote_plus
 
 from intent.schema import IntentObject, KnownGoal
 from config.settings import CACTUS_GEMMA4_MODEL, GEMINI_API_KEY
+
+
+# #region agent log
+def _dlog(loc: str, msg: str, data: dict, hid: str = "H12") -> None:
+    try:
+        import json as _j, os as _o, time as _t
+        _p = "/Users/alspenceramitojr/Desktop/Ali/.cursor/debug-4ea166.log"
+        _o.makedirs(_o.path.dirname(_p), exist_ok=True)
+        with open(_p, "a") as _f:
+            _f.write(_j.dumps({
+                "sessionId": "4ea166",
+                "hypothesisId": hid,
+                "location": loc,
+                "message": msg,
+                "data": data,
+                "timestamp": int(_t.time() * 1000),
+            }) + "\n")
+            _f.flush()
+    except Exception:
+        pass
+# #endregion
 
 # ── Backend availability checks ───────────────────────────────────────────────
 try:
@@ -59,22 +81,80 @@ async def parse_intent(transcript: str) -> IntentObject:
     """
     # Rule-based covers the demo flows instantly — don't burn a network call for those
     rule = _rule_based_parse(transcript)
+    # #region agent log
+    _dlog(
+        "intent:parse_intent:rule",
+        "rule-based candidate evaluated",
+        {"transcript": transcript, "rule_goal": rule.goal.value},
+        "H12",
+    )
+    # #endregion
     if rule.goal.value != "unknown":
+        # #region agent log
+        _dlog(
+            "intent:parse_intent:final",
+            "rule-based intent selected",
+            {"transcript": transcript, "final_goal": rule.goal.value, "source": "rule"},
+            "H12",
+        )
+        # #endregion
         return rule
 
     # Unknown intent — ask Gemini
     if GEMINI_AVAILABLE:
         try:
-            return await _parse_with_gemini(transcript)
+            gem = await _parse_with_gemini(transcript)
+            # #region agent log
+            _dlog(
+                "intent:parse_intent:final",
+                "gemini intent selected",
+                {"transcript": transcript, "final_goal": gem.goal.value, "source": "gemini"},
+                "H12",
+            )
+            # #endregion
+            return gem
         except Exception as e:
             print(f"[intent] Gemini failed ({e}), trying Cactus")
+            # #region agent log
+            _dlog(
+                "intent:parse_intent:gemini_error",
+                "gemini parse failed",
+                {"transcript": transcript, "err": str(e)[:180]},
+                "H12",
+            )
+            # #endregion
 
     if CACTUS_AVAILABLE:
         try:
-            return await _parse_with_cactus(transcript)
+            cat = await _parse_with_cactus(transcript)
+            # #region agent log
+            _dlog(
+                "intent:parse_intent:final",
+                "cactus intent selected",
+                {"transcript": transcript, "final_goal": cat.goal.value, "source": "cactus"},
+                "H12",
+            )
+            # #endregion
+            return cat
         except Exception as e:
             print(f"[intent] Cactus failed ({e}), returning unknown intent")
+            # #region agent log
+            _dlog(
+                "intent:parse_intent:cactus_error",
+                "cactus parse failed",
+                {"transcript": transcript, "err": str(e)[:180]},
+                "H12",
+            )
+            # #endregion
 
+    # #region agent log
+    _dlog(
+        "intent:parse_intent:final",
+        "fallback unknown intent selected",
+        {"transcript": transcript, "final_goal": rule.goal.value, "source": "fallback_unknown"},
+        "H12",
+    )
+    # #endregion
     return rule  # already unknown
 
 
@@ -195,6 +275,57 @@ _ATTACHMENT_TRIGGERS = (
     "send the file",
 )
 
+_FILE_HINT_WORDS = {
+    "resume", "cv", "cover", "letter", "deck", "slides", "document", "doc",
+    "docx", "pdf", "file", "folder", "finder", "download", "downloads",
+}
+_FILE_EXT_HINTS = (".pdf", ".doc", ".docx", ".txt", ".md", ".rtf", ".pages", ".ppt", ".pptx")
+
+
+def _infer_open_url_target(transcript: str) -> str | None:
+    """
+    Infer a web destination from phrases like:
+      - "open my linkedin"
+      - "open gmail"
+      - "go to docs.google.com"
+    Returns None if this sounds like a local file/folder request.
+    """
+    t = transcript.lower().strip()
+    cue = None
+    for c in ("open my ", "open ", "go to ", "visit ", "launch "):
+        if t.startswith(c):
+            cue = c
+            break
+    if cue is None:
+        return None
+
+    query = transcript[len(cue):].strip().rstrip(".?!")
+    if not query:
+        return None
+    ql = query.lower()
+    tokens = [tok for tok in re.findall(r"[a-z0-9._-]+", ql) if tok]
+    if not tokens:
+        return None
+
+    # If this looks file-like, let FIND_FILE handle it.
+    if any(w in tokens for w in _FILE_HINT_WORDS):
+        return None
+    if any(ext in ql for ext in _FILE_EXT_HINTS):
+        return None
+
+    # Explicit URL/domain
+    if ql.startswith("http://") or ql.startswith("https://"):
+        return query
+    if "." in tokens[0] and " " not in query:
+        return f"https://{tokens[0]}" if not ql.startswith("http") else query
+
+    # Single service token (linkedin, github, notion, etc.) -> direct domain.
+    if len(tokens) == 1 and len(tokens[0]) >= 3:
+        return f"https://www.{tokens[0]}.com"
+
+    # Fallback to web search for multi-word destinations.
+    return f"https://www.google.com/search?q={quote_plus(query)}"
+
 
 def _extract_file_query(transcript: str, trigger: str) -> str:
     lower = transcript.lower()
@@ -209,6 +340,33 @@ def _extract_file_query(transcript: str, trigger: str) -> str:
 def _rule_based_parse(transcript: str) -> IntentObject:
     """Keyword fallback covering the three core demo flows."""
     t = transcript.lower()
+
+    url_target = _infer_open_url_target(transcript)
+    if url_target is not None:
+        return IntentObject(
+            goal=KnownGoal.OPEN_URL,
+            target={"type": "url", "value": url_target},
+            uses_local_data=[],
+            requires_browser=False,
+            requires_submission=False,
+            slots={"url": url_target},
+            raw_transcript=transcript,
+        )
+
+    if any(kw in t for kw in [
+        "start meeting", "capture meeting", "meeting capture",
+        "listen to meeting", "take notes", "record meeting",
+        "start capture", "capture this",
+    ]):
+        return IntentObject(
+            goal=KnownGoal.CAPTURE_MEETING,
+            target={},
+            uses_local_data=[],
+            requires_browser=False,
+            requires_submission=False,
+            slots={},
+            raw_transcript=transcript,
+        )
 
     if any(kw in t for kw in ["apply", "yc", "y combinator", "application"]):
         return IntentObject(

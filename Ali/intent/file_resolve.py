@@ -140,6 +140,10 @@ async def _resolve_role(
     state: "_ResolverState",
 ) -> Path | None:
     try:
+        alias_for_found = _alias_for_found_query(intent, role, transcript, state)
+        if alias_for_found is not None:
+            return alias_for_found
+
         early = _early_exit_slot_valid(intent, role, state)
         if early is not None:
             return early
@@ -209,6 +213,60 @@ async def _resolve_role(
         )
         _finalize(state, exit_reason="error", outcome="failure")
         return None
+
+
+def _alias_for_found_query(
+    intent: IntentObject,
+    role: str,
+    transcript: str,
+    state: "_ResolverState",
+) -> Path | None:
+    """
+    Fast path: for generic find_file role='found', map common queries like
+    "resume" / "cover letter" onto FILE_ALIASES immediately.
+    """
+    if role != "found":
+        return None
+    query = _query_for_role(intent, role, transcript).lower()
+    # Wake phrases often arrive truncated to "open my". In that case, default
+    # to resume alias so "Ali open my resume" still resolves on the first try.
+    if not query.strip() or query.strip() in {"open my", "find my", "show my", "locate my"}:
+        raw_resume = FILE_ALIASES.get("resume")
+        if raw_resume:
+            expanded_resume = os.path.expanduser(raw_resume)
+            if os.path.isfile(expanded_resume):
+                _emit("alias", role=role, mapped_from="resume_default", result="hit", basename=os.path.basename(expanded_resume))
+                _finalize(
+                    state,
+                    exit_reason="alias_hit_default_resume",
+                    outcome="success",
+                    slot=role,
+                    basename=os.path.basename(expanded_resume),
+                )
+                return Path(expanded_resume)
+    alias_key: str | None = None
+    if "resume" in query or "cv" in query:
+        alias_key = "resume"
+    elif "cover letter" in query or "coverletter" in query:
+        alias_key = "cover_letter"
+    if not alias_key:
+        return None
+    raw = FILE_ALIASES.get(alias_key)
+    if not raw:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isfile(expanded):
+        _emit("alias", role=role, mapped_from=alias_key, result="missing_file")
+        return None
+    _emit("alias", role=role, mapped_from=alias_key, result="hit", basename=os.path.basename(expanded))
+    _finalize(
+        state,
+        exit_reason="alias_hit",
+        outcome="success",
+        slot=role,
+        basename=os.path.basename(expanded),
+    )
+    return Path(expanded)
 
 
 def _early_exit_slot_valid(

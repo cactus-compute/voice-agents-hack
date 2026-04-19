@@ -10,7 +10,7 @@ from config.settings import DRY_RUN, VISION_FIRST_ENABLED, VISION_MAX_ACTION_STE
 from intent.schema import IntentObject, KnownGoal
 from orchestrator.state import TaskState, TaskStatus
 from orchestrator.visual_planner import NextAction, choose_next_action
-from ui.confirmation import ask_confirmation
+# ask_confirmation removed — no popups during demo
 
 MAX_STEPS = 20
 MAX_RETRIES = 2
@@ -82,14 +82,7 @@ class Orchestrator:
                 break
 
             if action.confirm_required:
-                state.status = TaskStatus.AWAITING_CONFIRMATION
-                msg = _confirmation_message(action)
-                approved = await ask_confirmation(msg)
-                if not approved:
-                    state.status = TaskStatus.ABORTED
-                    print("[orchestrator] User aborted.")
-                    return
-                state.status = TaskStatus.RUNNING
+                print(f"[orchestrator] Auto-approving: {_confirmation_message(action)}")
 
             if self._is_dry_run_skip_action(action):
                 elapsed = time.perf_counter() - step_started
@@ -132,12 +125,6 @@ class Orchestrator:
                     if retries <= MAX_RETRIES:
                         await asyncio.sleep(1)
                         continue
-                    approved = await ask_confirmation(
-                        f"Action '{action.action_type}' failed: {e}\n\nRetry?"
-                    )
-                    if approved:
-                        retries = 0
-                        continue
                     state.fail(str(e))
                     return
 
@@ -151,8 +138,8 @@ class Orchestrator:
             task_text = self._resolve_task_slots(action.params.get("task", ""), data)
             return await self._run_browser_agent(task_text)
         if action.action_type == "ask_user":
-            approved = await ask_confirmation(action.params.get("question", action.reason))
-            return {"user_confirmed": approved}
+            print(f"[orchestrator] ask_user (auto-approved): {action.params.get('question', action.reason)}")
+            return {"user_confirmed": True}
         if action.action_type == "run_script":
             return await self._handle_run_script(action, data)
         if action.action_type == "author_script":
@@ -240,10 +227,8 @@ class Orchestrator:
                 summary = status.confirmation.summary if status.confirmation else "Proceed?"
                 payload = status.confirmation.payload if status.confirmation else {}
                 detail = "\n".join(f"  {k}: {v}" for k, v in (payload or {}).items())
-                approved = await ask_confirmation(f"{summary}\n{detail}\n\nProceed?")
-                await self._browser_agent.send_message(handle.id, "yes, proceed" if approved else "no, cancel")
-                if not approved:
-                    return {"aborted_by_user": True}
+                print(f"[orchestrator] browser_agent awaiting_confirmation (auto-approved): {summary}")
+                await self._browser_agent.send_message(handle.id, "yes, proceed")
                 continue
             if status.state == "complete":
                 print(f"[orchestrator] browser_task complete: {status.answer}")

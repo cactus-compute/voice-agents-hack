@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type OverlayState =
+  | "prompt_ready"
   | "recording"
   | "transcribing"
   | "transcript"
@@ -27,6 +28,8 @@ const MAX_BUBBLES = 6;
 
 function bubbleFromEvent(evt: OverlayEvent): Bubble | null {
   if (evt.state === "hidden") return null;
+  if (evt.state === "prompt_ready")
+    return { text: "Speak after the tone…", kind: "status" };
   if (evt.state === "transcript") return { text: evt.text, kind: "user" };
   if (evt.state === "action" || evt.state === "done") return { text: evt.text, kind: "assistant" };
   if (evt.state === "error") return { text: evt.text || "Error", kind: "error" };
@@ -87,6 +90,7 @@ function App() {
 
   const statusChip = useMemo(() => {
     if (!connected) return "Offline";
+    if (state === "prompt_ready") return "Get ready";
     if (state === "recording") return "Listening";
     if (state === "transcribing") return "Thinking";
     if (state === "error") return "Error";

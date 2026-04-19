@@ -6,14 +6,13 @@ Edit KNOWN_CONTACTS with real phone numbers or iMessage emails before the demo.
 import os
 
 FILE_ALIASES: dict[str, str] = {
-    "resume":          "~/Desktop/resume.pdf",
-    "cover_letter":    "~/Desktop/cover_letter.docx",
-    "linkedin_export": "~/Downloads/linkedin_export.pdf",
+    "resume": "~/Desktop/Omondi, Alspencer 03.03.2026.pdf",
 }
 
 # Hardcoded contacts — checked before querying Contacts.app.
 # Keys are lowercase name variants Whisper might produce.
 # Values are phone numbers (+1XXXXXXXXXX) or iMessage emails.
+# --- Alspencer --- a lot of hardcoded shit here.
 KNOWN_CONTACTS: dict[str, str] = {
     "hanzi":          "hanzili0217@gmail.com",
     "hanzi li":       "hanzili0217@gmail.com",
